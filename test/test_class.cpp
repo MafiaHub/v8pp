@@ -127,6 +127,24 @@ struct MetadataClass
 	int double_value(int value) { return value * 2; }
 };
 
+struct UndocumentedMetadataClass
+{
+};
+
+struct InvalidMetadataClass
+{
+};
+
+void metadata_static_function(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	args.GetReturnValue().Set(10);
+}
+
+void metadata_prototype_function(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	args.GetReturnValue().Set(20);
+}
+
 template<typename Traits>
 static int extern_fun(v8::FunctionCallbackInfo<v8::Value> const& args)
 {
@@ -155,14 +173,57 @@ void test_class_()
 	v8pp::metadata::registry metadata;
 	v8pp::class_<MetadataClass, Traits> metadata_class(isolate, metadata, "MetadataClass", "Metadata test class");
 	auto& metadata_class_api = metadata.symbols().front();
+	check_eq("class metadata symbol", metadata_class.metadata_symbol(), &metadata_class_api);
+	check_eq("class metadata isolate", metadata_class.isolate(), isolate);
+	check_ex<std::invalid_argument>("class rejects global object metadata", [isolate, &metadata]()
+		{ v8pp::class_<InvalidMetadataClass, Traits> invalid(isolate, metadata.global_object("InvalidClass")); });
+	v8pp::class_<UndocumentedMetadataClass, Traits> undocumented_metadata_class(isolate);
+	undocumented_metadata_class
+		.document_property("ignored", { "Not recorded", "number", false, false })
+		.document_base("IgnoredBase");
+	check_ex<std::logic_error>("undocumented class cannot publish",
+		[isolate, &undocumented_metadata_class]()
+			{ undocumented_metadata_class.publish(isolate->GetCurrentContext()->Global()); });
 	v8pp::metadata::function_options metadata_function;
 	metadata_function.description = "Doubles a value";
 	metadata_function.parameters = { { .name = "value" } };
-	metadata_class.function("doubleValue", &MetadataClass::double_value, metadata_function);
+	metadata_class
+		.template ctor<>()
+		.function("doubleValue", &MetadataClass::double_value, metadata_function)
+		.document_property("value", { "Current value", "number", false, false })
+		.document_base("BaseMetadataClass")
+		.document_base("BaseMetadataClass");
+	auto described_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
+		"describedValue", { .description = "Descriptor binding" });
+	metadata_class.function(described_function, &MetadataClass::double_value);
+	auto metadata_constructor = metadata_class.js_function_template()
+		->GetFunction(isolate->GetCurrentContext()).ToLocalChecked();
+	metadata_class
+		.static_function(metadata_constructor, "staticValue", &metadata_static_function,
+			v8pp::metadata::docs("number", {}, "Returns a static value"))
+		.prototype_function("prototypeValue", &metadata_prototype_function,
+			v8pp::metadata::docs("number", {}, "Returns a prototype value"));
+	metadata_class.publish(isolate->GetCurrentContext()->Global());
+	metadata_class.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
 	check_eq("class metadata description", metadata_class_api.functions[0].description,
 		std::string("Doubles a value"));
 	check_eq("class metadata parameter", metadata_class_api.functions[0].call_signature.parameters[0].name,
 		std::string("value"));
+	check_eq("class descriptor metadata", metadata_class_api.functions[1].description,
+		std::string("Descriptor binding"));
+	check_eq("class static function metadata", metadata_class_api.functions[2].static_, true);
+	check_eq("class prototype function metadata", metadata_class_api.functions[3].static_, false);
+	check_eq("class property metadata", metadata_class_api.properties[0].value_type.name,
+		std::string("number"));
+	check_eq("class base deduplication", metadata_class_api.bases.size(), std::size_t{ 1 });
+	check_eq("class published function", run_script<int>(context,
+		"new MetadataClass().doubleValue(5)"), 10);
+	check_eq("class published descriptor function", run_script<int>(context,
+		"new MetadataClass().describedValue(6)"), 12);
+	check_eq("class published static function", run_script<int>(context,
+		"MetadataClass.staticValue()"), 10);
+	check_eq("class published prototype function", run_script<int>(context,
+		"new MetadataClass().prototypeValue()"), 20);
 
 	using x_prop_get = int (X::*)() const;
 	using x_prop_set = void (X::*)(int);
