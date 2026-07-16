@@ -387,6 +387,7 @@ public:
 	{
 		bool const readonly = setter.IsEmpty();
 		options.readonly = readonly;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		class_function_template()->PrototypeTemplate()->SetAccessorProperty(
 			v8pp::to_v8(isolate(), name).template As<v8::Name>(), getter, setter,
@@ -408,7 +409,6 @@ public:
 		if (!metadata_) throw std::logic_error("v8pp::class_::publish requires metadata");
 		auto context = isolate()->GetCurrentContext();
 		auto constructor = js_function_template()->GetFunction(context).ToLocalChecked();
-		apply_documented_static_values(constructor);
 		global->Set(context, v8pp::to_v8(isolate(), metadata_->name), constructor).Check();
 		return *this;
 	}
@@ -417,7 +417,6 @@ public:
 	{
 		if (!metadata_) throw std::logic_error("v8pp::class_::publish requires metadata");
 		auto context = isolate()->GetCurrentContext();
-		apply_documented_static_values(constructor);
 		global->Set(context, v8pp::to_v8(isolate(), metadata_->name), constructor).Check();
 		return *this;
 	}
@@ -448,6 +447,7 @@ public:
 	class_& var(std::string_view name, Attribute attribute, metadata::property_options options)
 	{
 		options.readonly = false;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		return var(name, attribute);
 	}
@@ -488,6 +488,7 @@ public:
 	class_& property(std::string_view name, GetFunction&& get, metadata::property_options options)
 	{
 		options.readonly = true;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		return property(name, std::forward<GetFunction>(get));
 	}
@@ -498,6 +499,7 @@ public:
 		metadata::property_options options)
 	{
 		options.readonly = false;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		return property(name, std::forward<GetFunction>(get), std::forward<SetFunction>(set));
 	}
@@ -544,8 +546,18 @@ public:
 		bool const readonly = options.readonly;
 		options.static_ = true;
 		document_property(name, std::move(options));
-		documented_static_values_.push_back({ std::string(name),
-			v8::Global<v8::Value>(isolate(), to_v8(isolate(), value)), readonly });
+
+		auto data = detail::external_data::set(isolate(),
+			documented_static_value(isolate(), to_v8(isolate(), value)));
+		auto getter = v8::FunctionTemplate::New(isolate(), &documented_static_get, data);
+		v8::Local<v8::FunctionTemplate> setter;
+		if (!readonly)
+		{
+			setter = v8::FunctionTemplate::New(isolate(), &documented_static_set, data);
+		}
+		js_function_template()->SetAccessorProperty(
+			v8pp::to_v8(isolate(), name).template As<v8::Name>(), getter, setter,
+			v8::PropertyAttribute(v8::DontDelete | (readonly ? v8::ReadOnly : 0)));
 		return *this;
 	}
 
@@ -716,24 +728,28 @@ private:
 
 	struct documented_static_value
 	{
-		std::string name;
 		v8::Global<v8::Value> value;
-		bool readonly;
+
+		documented_static_value(v8::Isolate* isolate, v8::Local<v8::Value> initial_value)
+			: value(isolate, initial_value)
+		{
+		}
 	};
 
-	void apply_documented_static_values(v8::Local<v8::Function> constructor)
+	static void documented_static_get(v8::FunctionCallbackInfo<v8::Value> const& args)
 	{
-		auto context = isolate()->GetCurrentContext();
-		for (auto const& property : documented_static_values_)
-		{
-			constructor->DefineOwnProperty(context, v8pp::to_v8(isolate(), property.name),
-				property.value.Get(isolate()),
-				v8::PropertyAttribute(v8::DontDelete | (property.readonly ? v8::ReadOnly : 0))).FromJust();
-		}
+		auto& property = detail::external_data::get<documented_static_value>(args.Data());
+		args.GetReturnValue().Set(property.value.Get(args.GetIsolate()));
+	}
+
+	static void documented_static_set(v8::FunctionCallbackInfo<v8::Value> const& args)
+	{
+		if (!args.Length()) return;
+		auto& property = detail::external_data::get<documented_static_value>(args.Data());
+		property.value.Reset(args.GetIsolate(), args[0]);
 	}
 
 	metadata::symbol* metadata_;
-	std::vector<documented_static_value> documented_static_values_;
 };
 
 /// Interface to access C++ classes bound to V8

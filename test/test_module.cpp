@@ -84,15 +84,15 @@ void test_module()
 	documented.document_property("status", { "Module status", "string", true, false });
 	documented
 		.value("readonlyValue", v8pp::to_v8(context.isolate(), 10),
-			{ "Read-only value", "number", true, false })
+			{ "Read-only value", "number", true, true })
 		.value("writableValue", v8pp::to_v8(context.isolate(), 11),
-			{ "Writable value", "number", false, false })
+			{ "Writable value", "number", false, true })
 		.const_("constantValue", 12,
-			v8pp::metadata::property_docs("number", "Constant value"))
+			{ "Constant value", "number", false, true })
 		.property("documentedReadonlyProperty", &get_x,
-			v8pp::metadata::property_docs("number", "Documented read-only property"))
+			{ "Documented read-only property", "number", false, true })
 		.property("documentedWritableProperty", &get_x, &set_x,
-			v8pp::metadata::property_docs("number", "Documented writable property"));
+			{ "Documented writable property", "number", true, true });
 	module.document_property("ignored", { "Not recorded", "string", false, false });
 
 	context.module("module", module);
@@ -104,7 +104,7 @@ void test_module()
 		v8pp::metadata::docs("number", { v8pp::metadata::param("value", "number") }));
 	auto instance = supplied_instance.new_instance();
 	supplied_instance.value(instance, "marker", v8pp::to_v8(context.isolate(), 7),
-		{ "Materialized object value", "number", true, false });
+		{ "Materialized object value", "number", true, true });
 	supplied_instance.publish(global, instance);
 
 	auto raw = v8::Object::New(context.isolate());
@@ -190,6 +190,12 @@ void test_module()
 	check_eq("documented constant readonly", documented_api.properties[3].readonly, true);
 	check_eq("documented accessor readonly", documented_api.properties[4].readonly, true);
 	check_eq("documented accessor writable", documented_api.properties[5].readonly, false);
+	for (std::size_t index = 1; index < documented_api.properties.size(); ++index)
+	{
+		check_eq("module instance property metadata", documented_api.properties[index].static_, false);
+	}
+	check_eq("supplied module instance property metadata shape",
+		metadata.global_object("suppliedInstance").properties[0].static_, false);
 	check_eq("raw function metadata", raw_api.functions[0].description,
 		std::string("Increment a raw object value"));
 	check_eq("global metadata count", metadata.variables().size(), std::size_t{ 3 });

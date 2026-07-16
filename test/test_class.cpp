@@ -211,25 +211,27 @@ void test_class_()
 	metadata_class
 		.template ctor<>()
 		.function("doubleValue", &MetadataClass::double_value, metadata_function)
-		.var("value", &MetadataClass::value, v8pp::metadata::property_docs("number", "Member value"))
+		.var("value", &MetadataClass::value, { "Member value", "number", false, true })
 		.property("typedValue", &MetadataClass::get_value, &MetadataClass::set_value,
-			v8pp::metadata::property_docs("number", "Typed value"))
+			{ "Typed value", "number", true, true })
 		.property("readonlyTypedValue", &MetadataClass::get_value,
-			v8pp::metadata::property_docs("number", "Read-only typed value"))
-		.const_("constantValue", 30, v8pp::metadata::property_docs("number", "Constant value"))
+			{ "Read-only typed value", "number", false, true })
+		.const_("constantValue", 30, { "Constant value", "number", false, true })
 		.static_("staticProperty", 40,
 			{ "Static property", "number", true, true })
 		.static_("staticArray", std::vector<int>{ 1, 2 },
 			{ "Static array", "number[]", true, true })
+		.static_("writableStatic", 50,
+			{ "Writable static property", "number", false, true })
 		.document_base("BaseMetadataClass")
 		.document_base("BaseMetadataClass");
 	auto raw_getter = v8::FunctionTemplate::New(isolate, &metadata_value_get<Traits>);
 	auto raw_setter = v8::FunctionTemplate::New(isolate, &metadata_value_set<Traits>);
 	metadata_class
 		.accessor_property("rawValue", raw_getter, raw_setter,
-			v8pp::metadata::property_docs("number", "Raw accessor value"))
+			{ "Raw accessor value", "number", true, true })
 		.accessor_property("readonlyRawValue", raw_getter, {},
-			v8pp::metadata::property_docs("number", "Read-only raw accessor value"));
+			{ "Read-only raw accessor value", "number", false, true });
 	auto described_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
 		"describedValue", { .description = "Descriptor binding" });
 	metadata_class.function(described_function, &MetadataClass::double_value);
@@ -255,6 +257,9 @@ void test_class_()
 			v8pp::metadata::docs("number", {}, "Returns a template static value"))
 		.prototype_function("prototypeValue", &metadata_prototype_function,
 			v8pp::metadata::docs("number", {}, "Returns a prototype value"));
+	v8pp::module metadata_module(isolate, metadata, "MetadataModule");
+	metadata_module.class_("MetadataClass", metadata_class);
+	metadata_module.publish(isolate->GetCurrentContext()->Global());
 	auto metadata_constructor = metadata_class.js_function_template()
 		->GetFunction(isolate->GetCurrentContext()).ToLocalChecked();
 	metadata_class.static_function(metadata_constructor, "staticValue", &metadata_static_function,
@@ -280,10 +285,16 @@ void test_class_()
 	check_eq("class constant metadata", metadata_class_api.properties[3].readonly, true);
 	check_eq("class static property metadata", metadata_class_api.properties[4].static_, true);
 	check_eq("class static object metadata", metadata_class_api.properties[5].static_, true);
-	check_eq("class raw accessor metadata", metadata_class_api.properties[6].readonly, false);
-	check_eq("class readonly raw accessor metadata", metadata_class_api.properties[7].readonly, true);
-	check_eq("class extension property metadata", metadata_class_api.properties[8].name,
+	check_eq("class writable static metadata", metadata_class_api.properties[6].static_, true);
+	check_eq("class raw accessor metadata", metadata_class_api.properties[7].readonly, false);
+	check_eq("class readonly raw accessor metadata", metadata_class_api.properties[8].readonly, true);
+	check_eq("class extension property metadata", metadata_class_api.properties[9].name,
 		std::string("extendedProperty"));
+	for (std::size_t index : { std::size_t{ 0 }, std::size_t{ 1 }, std::size_t{ 2 },
+		std::size_t{ 3 }, std::size_t{ 7 }, std::size_t{ 8 } })
+	{
+		check_eq("class instance property metadata", metadata_class_api.properties[index].static_, false);
+	}
 	check_eq("class base deduplication", metadata_class_api.bases.size(), std::size_t{ 1 });
 	check_eq("class published function", run_script<int>(context,
 		"new MetadataClass().doubleValue(5)"), 10);
@@ -309,6 +320,12 @@ void test_class_()
 		"MetadataClass.staticProperty"), 40);
 	check_eq("class documented static object", run_script<int>(context,
 		"MetadataClass.staticArray[0] + MetadataClass.staticArray[1]"), 3);
+	check_eq("class documented writable static", run_script<int>(context,
+		"MetadataClass.writableStatic = 51; MetadataClass.writableStatic"), 51);
+	check_eq("module class documented static object", run_script<int>(context,
+		"MetadataModule.MetadataClass.staticArray[0] + MetadataModule.MetadataClass.staticArray[1]"), 3);
+	check_eq("module class documented writable static", run_script<int>(context,
+		"MetadataModule.MetadataClass.writableStatic = 52; MetadataClass.writableStatic"), 52);
 	check_eq("class raw accessor property", run_script<int>(context,
 		"metadataValue = new MetadataClass(); metadataValue.rawValue = 4; metadataValue.rawValue"), 4);
 	check_eq("class readonly raw accessor property", run_script<int>(context,

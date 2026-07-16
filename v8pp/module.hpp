@@ -145,6 +145,7 @@ public:
 		static_assert(!std::is_base_of_v<v8::Object, Data>,
 			"Concrete V8 objects must be set on a materialized module instance");
 		bool const readonly = options.readonly;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		obj_->Set(v8pp::to_v8(isolate_, name), value, readonly ? v8::ReadOnly : v8::None);
 		return *this;
@@ -171,6 +172,7 @@ public:
 		static_assert(std::is_base_of_v<v8::Value, Data>,
 			"Materialized module instance properties must be V8 values");
 		bool const readonly = options.readonly;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		instance->DefineOwnProperty(isolate_->GetCurrentContext(), v8pp::to_v8(isolate_, name),
 			value, readonly ? v8::ReadOnly : v8::None).Check();
@@ -297,6 +299,7 @@ public:
 	module& property(char const* name, GetFunction&& get, metadata::property_options options)
 	{
 		options.readonly = true;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		return property(name, std::forward<GetFunction>(get));
 	}
@@ -307,6 +310,7 @@ public:
 		metadata::property_options options)
 	{
 		options.readonly = false;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		return property(name, std::forward<GetFunction>(get), std::forward<SetFunction>(set));
 	}
@@ -337,6 +341,7 @@ public:
 	module& const_(std::string_view name, Value const& value, metadata::property_options options)
 	{
 		options.readonly = true;
+		options.static_ = false;
 		document_property(name, std::move(options));
 		return const_(name, value);
 	}
