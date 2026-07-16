@@ -120,6 +120,7 @@ struct symbol
 	std::string name;
 	std::string description;
 	symbol_kind kind = symbol_kind::global_object;
+	std::optional<function> constructor;
 	std::vector<function> functions;
 	std::vector<property> properties;
 	std::vector<std::string> bases;
@@ -222,7 +223,7 @@ private:
 				return existing;
 			}
 		}
-		symbols_.push_back({ std::move(name), std::move(description), kind, {}, {}, {} });
+		symbols_.push_back({ std::move(name), std::move(description), kind, {}, {}, {}, {} });
 		return symbols_.back();
 	}
 
@@ -526,6 +527,18 @@ inline void write_symbol(std::ostream& output, symbol const& value)
 	output << ",\"kind\":";
 	write_string(output, value.kind == symbol_kind::constructor ? "constructor"
 		: value.kind == symbol_kind::data_type ? "dataType" : "globalObject");
+	if (value.kind == symbol_kind::constructor)
+	{
+		output << ",\"constructor\":";
+		if (value.constructor)
+		{
+			write_function(output, *value.constructor);
+		}
+		else
+		{
+			output << "null";
+		}
+	}
 	output << ",\"functions\":[";
 	for (std::size_t index = 0; index < value.functions.size(); ++index)
 	{

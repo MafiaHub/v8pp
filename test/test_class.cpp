@@ -209,7 +209,7 @@ void test_class_()
 	metadata_function.description = "Doubles a value";
 	metadata_function.parameters = { { .name = "value" } };
 	metadata_class
-		.template ctor<>()
+		.template ctor<>(v8pp::metadata::docs("void", {}, "Creates a metadata test class"))
 		.function("doubleValue", &MetadataClass::double_value, metadata_function)
 		.var("value", &MetadataClass::value, { "Member value", "number", false, true })
 		.property("typedValue", &MetadataClass::get_value, &MetadataClass::set_value,
@@ -225,6 +225,9 @@ void test_class_()
 			{ "Writable static property", "number", false, true })
 		.document_base("BaseMetadataClass")
 		.document_base("BaseMetadataClass");
+	check_eq("class constructor metadata present", metadata_class_api.constructor.has_value(), true);
+	check_eq("class constructor metadata description", metadata_class_api.constructor->description,
+		std::string("Creates a metadata test class"));
 	auto raw_getter = v8::FunctionTemplate::New(isolate, &metadata_value_get<Traits>);
 	auto raw_setter = v8::FunctionTemplate::New(isolate, &metadata_value_set<Traits>);
 	metadata_class

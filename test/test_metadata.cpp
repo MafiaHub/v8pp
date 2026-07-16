@@ -48,7 +48,10 @@ void test_metadata()
 	v8pp::metadata::registry registry;
 	auto& camera = registry.global_object("Camera", "Client camera helpers");
 	check_eq("metadata symbol deduplication", &registry.global_object("Camera") == &camera, true);
-	registry.constructor("Player", "A wrapped player class");
+	auto& player = registry.constructor("Player", "A wrapped player class");
+	player.constructor = v8pp::metadata::function_of<void (*)(uint64_t)>("constructor",
+		{ .description = "Wraps an existing player",
+			.parameters = { { .name = "id", .description = "Network entity identifier" } } });
 	registry.data_type("ScreenPosition", "A projection result");
 	check_ex<std::invalid_argument>("metadata symbol kind mismatch", [&registry]()
 		{ registry.constructor("Camera"); });
@@ -74,6 +77,10 @@ void test_metadata()
 	check_eq("metadata property type", camera.properties[0].value_type.name, std::string("boolean"));
 	check_eq("metadata property readonly", camera.properties[0].readonly, true);
 	check_eq("metadata variable count", registry.variables().size(), std::size_t{ 1 });
+	check_eq("metadata constructor parameter", player.constructor->call_signature.parameters[0].name,
+		std::string("id"));
+	check_eq("metadata constructor description", player.constructor->description,
+		std::string("Wraps an existing player"));
 
 	auto& updated_camera = registry.global_object("Camera", "Updated camera description");
 	check_eq("metadata description replacement", updated_camera.description,
@@ -155,6 +162,8 @@ void test_metadata()
 	check_eq("metadata json schema", json.find("\"schemaVersion\":2") != std::string::npos, true);
 	check_eq("metadata json contains runtime shape", json.find("\"kind\":\"globalObject\"") != std::string::npos, true);
 	check_eq("metadata json contains constructor", json.find("\"kind\":\"constructor\"") != std::string::npos, true);
+	check_eq("metadata json contains constructor signature",
+		json.find("\"constructor\":{\"name\":\"constructor\",\"description\":\"Wraps an existing player\"") != std::string::npos, true);
 	check_eq("metadata json contains data type", json.find("\"kind\":\"dataType\"") != std::string::npos, true);
 	check_eq("metadata json contains symbol", json.find("\"name\":\"Camera\"") != std::string::npos, true);
 	check_eq("metadata json contains property", json.find("\"name\":\"active\"") != std::string::npos, true);

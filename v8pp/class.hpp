@@ -287,6 +287,22 @@ public:
 			{
 			auto object = create(args);
 			return std::make_pair(object, Traits::object_size(object)); });
+		if (metadata_)
+		{
+			metadata_->constructor = metadata::function_of<void (*)(Args...)>("constructor");
+		}
+		return *this;
+	}
+
+	/// Set class constructor signature and record its documentation metadata
+	template<typename... Args, typename Create = object_create_from_v8<Args...>>
+	class_& ctor(metadata::function_options const& options, ctor_function create = &Create::call)
+	{
+		ctor<Args...>(std::move(create));
+		if (metadata_)
+		{
+			metadata_->constructor = metadata::function_of<void (*)(Args...)>("constructor", options);
+		}
 		return *this;
 	}
 
