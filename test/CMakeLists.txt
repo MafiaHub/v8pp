@@ -10,6 +10,7 @@ add_executable(v8pp_test
 	test_convert.cpp
 	test_function.cpp
 	test_json.cpp
+	test_metadata.cpp
 	test_module.cpp
 	test_object.cpp
 	test_property.cpp

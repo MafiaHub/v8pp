@@ -28,6 +28,7 @@ set(V8PP_HEADERS
 	convert.hpp
 	function.hpp
 	json.hpp
+	metadata.hpp
 	module.hpp
 	object.hpp
 	property.hpp

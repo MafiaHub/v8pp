@@ -100,13 +100,20 @@ struct Y : X
 {
 	static int instance_count;
 
-	explicit Y(int x) { var = x; ++instance_count; }
+	explicit Y(int x)
+	{
+		var = x;
+		++instance_count;
+	}
 	~Y() { --instance_count; }
 
 	int useX(X& x) { return var + x.var; }
 
 	template<typename Traits, typename X_ptr = typename v8pp::class_<X, Traits>::object_pointer_type>
-	int useX_ptr(X_ptr x) { return var + x->var; }
+	int useX_ptr(X_ptr x)
+	{
+		return var + x->var;
+	}
 };
 
 int Y::instance_count = 0;
@@ -114,6 +121,50 @@ int Y::instance_count = 0;
 struct Z
 {
 };
+
+struct MetadataClass
+{
+	int value = 1;
+
+	int double_value(int value) { return value * 2; }
+	int get_value() const { return value; }
+	void set_value(int new_value) { value = new_value; }
+};
+
+struct UndocumentedMetadataClass
+{
+};
+
+struct InvalidMetadataClass
+{
+};
+
+void metadata_static_function(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	args.GetReturnValue().Set(10);
+}
+
+void metadata_prototype_function(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	args.GetReturnValue().Set(20);
+}
+
+template<typename Traits>
+void metadata_value_get(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	auto self = v8pp::class_<MetadataClass, Traits>::unwrap_object(args.GetIsolate(), args.This());
+	if (self) args.GetReturnValue().Set(self->value);
+}
+
+template<typename Traits>
+void metadata_value_set(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	auto self = v8pp::class_<MetadataClass, Traits>::unwrap_object(args.GetIsolate(), args.This());
+	if (self && args.Length())
+	{
+		self->value = args[0]->Int32Value(args.GetIsolate()->GetCurrentContext()).FromJust();
+	}
+}
 
 template<typename Traits>
 static int extern_fun(v8::FunctionCallbackInfo<v8::Value> const& args)
@@ -140,6 +191,146 @@ void test_class_()
 	v8::Isolate* isolate = context.isolate();
 	v8::HandleScope scope(isolate);
 
+	v8pp::metadata::registry metadata;
+	v8pp::class_<MetadataClass, Traits> metadata_class(isolate, metadata, "MetadataClass", "Metadata test class");
+	auto& metadata_class_api = metadata.symbols().front();
+	check_eq("class metadata symbol", metadata_class.metadata_symbol(), &metadata_class_api);
+	check_eq("class metadata isolate", metadata_class.isolate(), isolate);
+	check_ex<std::invalid_argument>("class rejects global object metadata", [isolate, &metadata]()
+		{ v8pp::class_<InvalidMetadataClass, Traits> invalid(isolate, metadata.global_object("InvalidClass")); });
+	v8pp::class_<UndocumentedMetadataClass, Traits> undocumented_metadata_class(isolate);
+	undocumented_metadata_class
+		.document_property("ignored", { "Not recorded", "number", false, false })
+		.document_base("IgnoredBase");
+	check_ex<std::logic_error>("undocumented class cannot publish",
+		[isolate, &undocumented_metadata_class]()
+			{ undocumented_metadata_class.publish(isolate->GetCurrentContext()->Global()); });
+	v8pp::metadata::function_options metadata_function;
+	metadata_function.description = "Doubles a value";
+	metadata_function.parameters = { { .name = "value" } };
+	metadata_class
+		.template ctor<>()
+		.function("doubleValue", &MetadataClass::double_value, metadata_function)
+		.var("value", &MetadataClass::value, { "Member value", "number", false, true })
+		.property("typedValue", &MetadataClass::get_value, &MetadataClass::set_value,
+			{ "Typed value", "number", true, true })
+		.property("readonlyTypedValue", &MetadataClass::get_value,
+			{ "Read-only typed value", "number", false, true })
+		.const_("constantValue", 30, { "Constant value", "number", false, true })
+		.static_("staticProperty", 40,
+			{ "Static property", "number", true, true })
+		.static_("staticArray", std::vector<int>{ 1, 2 },
+			{ "Static array", "number[]", true, true })
+		.static_("writableStatic", 50,
+			{ "Writable static property", "number", false, true })
+		.document_base("BaseMetadataClass")
+		.document_base("BaseMetadataClass");
+	auto raw_getter = v8::FunctionTemplate::New(isolate, &metadata_value_get<Traits>);
+	auto raw_setter = v8::FunctionTemplate::New(isolate, &metadata_value_set<Traits>);
+	metadata_class
+		.accessor_property("rawValue", raw_getter, raw_setter,
+			{ "Raw accessor value", "number", true, true })
+		.accessor_property("readonlyRawValue", raw_getter, {},
+			{ "Read-only raw accessor value", "number", false, true });
+	auto described_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
+		"describedValue", { .description = "Descriptor binding" });
+	metadata_class.function(described_function, &MetadataClass::double_value);
+	auto invalid_static_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
+		"invalidStaticValue", {}, true);
+	check_ex<std::invalid_argument>("member function rejects static metadata",
+		[&metadata_class, &invalid_static_function]()
+			{ metadata_class.function(invalid_static_function, &MetadataClass::double_value); });
+	auto& extension_api = metadata.constructor("MetadataClass");
+	auto metadata_extension = v8pp::class_<MetadataClass, Traits>::extend(isolate, extension_api);
+	check_eq("class extension metadata symbol", metadata_extension.metadata_symbol(), &extension_api);
+	metadata_extension
+		.function("extendedValue", &MetadataClass::double_value,
+			v8pp::metadata::docs("number", { v8pp::metadata::param("value", "number") },
+				"Doubles a value from an extension"))
+		.document_property("extendedProperty", { "Extended property", "number", true, false });
+	check_ex<std::invalid_argument>("class extension rejects global object metadata",
+		[isolate, &metadata]()
+			{ v8pp::class_<MetadataClass, Traits>::extend(isolate,
+				metadata.global_object("InvalidMetadataExtension")); });
+	metadata_class
+		.static_function("templateStaticValue", &metadata_static_function,
+			v8pp::metadata::docs("number", {}, "Returns a template static value"))
+		.prototype_function("prototypeValue", &metadata_prototype_function,
+			v8pp::metadata::docs("number", {}, "Returns a prototype value"));
+	v8pp::module metadata_module(isolate, metadata, "MetadataModule");
+	metadata_module.class_("MetadataClass", metadata_class);
+	metadata_module.publish(isolate->GetCurrentContext()->Global());
+	auto metadata_constructor = metadata_class.js_function_template()
+		->GetFunction(isolate->GetCurrentContext()).ToLocalChecked();
+	metadata_class.static_function(metadata_constructor, "staticValue", &metadata_static_function,
+		v8pp::metadata::docs("number", {}, "Returns a static value"));
+	metadata_class.publish(isolate->GetCurrentContext()->Global());
+	metadata_class.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
+	metadata_extension.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
+	check_eq("class metadata description", metadata_class_api.functions[0].description,
+		std::string("Doubles a value"));
+	check_eq("class metadata parameter", metadata_class_api.functions[0].call_signature.parameters[0].name,
+		std::string("value"));
+	check_eq("class descriptor metadata", metadata_class_api.functions[1].description,
+		std::string("Descriptor binding"));
+	check_eq("class extension function metadata", metadata_class_api.functions[2].description,
+		std::string("Doubles a value from an extension"));
+	check_eq("class template static function metadata", metadata_class_api.functions[3].static_, true);
+	check_eq("class prototype function metadata", metadata_class_api.functions[4].static_, false);
+	check_eq("class static function metadata", metadata_class_api.functions[5].static_, true);
+	check_eq("class property metadata", metadata_class_api.properties[0].value_type.name,
+		std::string("number"));
+	check_eq("class writable property metadata", metadata_class_api.properties[1].readonly, false);
+	check_eq("class readonly property metadata", metadata_class_api.properties[2].readonly, true);
+	check_eq("class constant metadata", metadata_class_api.properties[3].readonly, true);
+	check_eq("class static property metadata", metadata_class_api.properties[4].static_, true);
+	check_eq("class static object metadata", metadata_class_api.properties[5].static_, true);
+	check_eq("class writable static metadata", metadata_class_api.properties[6].static_, true);
+	check_eq("class raw accessor metadata", metadata_class_api.properties[7].readonly, false);
+	check_eq("class readonly raw accessor metadata", metadata_class_api.properties[8].readonly, true);
+	check_eq("class extension property metadata", metadata_class_api.properties[9].name,
+		std::string("extendedProperty"));
+	for (std::size_t index : { std::size_t{ 0 }, std::size_t{ 1 }, std::size_t{ 2 },
+		std::size_t{ 3 }, std::size_t{ 7 }, std::size_t{ 8 } })
+	{
+		check_eq("class instance property metadata", metadata_class_api.properties[index].static_, false);
+	}
+	check_eq("class base deduplication", metadata_class_api.bases.size(), std::size_t{ 1 });
+	check_eq("class published function", run_script<int>(context,
+		"new MetadataClass().doubleValue(5)"), 10);
+	check_eq("class published descriptor function", run_script<int>(context,
+		"new MetadataClass().describedValue(6)"), 12);
+	check_eq("class published template static function", run_script<int>(context,
+		"MetadataClass.templateStaticValue()"), 10);
+	check_eq("class published static function", run_script<int>(context,
+		"MetadataClass.staticValue()"), 10);
+	check_eq("class published prototype function", run_script<int>(context,
+		"new MetadataClass().prototypeValue()"), 20);
+	check_eq("class published extension function", run_script<int>(context,
+		"new MetadataClass().extendedValue(7)"), 14);
+	check_eq("class documented member variable", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.value = 2; metadataValue.value"), 2);
+	check_eq("class documented typed property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.typedValue = 3; metadataValue.typedValue"), 3);
+	check_eq("class documented readonly property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.readonlyTypedValue = 3; metadataValue.readonlyTypedValue"), 1);
+	check_eq("class documented constant", run_script<int>(context,
+		"new MetadataClass().constantValue"), 30);
+	check_eq("class documented static property", run_script<int>(context,
+		"MetadataClass.staticProperty"), 40);
+	check_eq("class documented static object", run_script<int>(context,
+		"MetadataClass.staticArray[0] + MetadataClass.staticArray[1]"), 3);
+	check_eq("class documented writable static", run_script<int>(context,
+		"MetadataClass.writableStatic = 51; MetadataClass.writableStatic"), 51);
+	check_eq("module class documented static object", run_script<int>(context,
+		"MetadataModule.MetadataClass.staticArray[0] + MetadataModule.MetadataClass.staticArray[1]"), 3);
+	check_eq("module class documented writable static", run_script<int>(context,
+		"MetadataModule.MetadataClass.writableStatic = 52; MetadataClass.writableStatic"), 52);
+	check_eq("class raw accessor property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.rawValue = 4; metadataValue.rawValue"), 4);
+	check_eq("class readonly raw accessor property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.readonlyRawValue = 4; metadataValue.readonlyRawValue"), 1);
+
 	using x_prop_get = int (X::*)() const;
 	using x_prop_set = void (X::*)(int);
 
@@ -163,14 +354,18 @@ void test_class_()
 		.template ctor<v8::FunctionCallbackInfo<v8::Value> const&>(X_ctor)
 		.const_("konst", 99)
 		.var("var", &X::var)
-		//TODO: static property definition works only at the end of class_ declaration!
+		// TODO: static property definition works only at the end of class_ declaration!
 		//.static_("my_static_var", 1)
 		//.static_("my_static_const_var", 42, true)
 		.property("rprop", &X::get)
 		.property("wprop", &X::get, &X::set)
 		.property("wprop2", static_cast<x_prop_get>(&X::prop), static_cast<x_prop_set>(&X::prop))
-		.property("prop", [](X const& x) mutable { return x.var; }, [](X& x, int n) { x.var = n; })
-		.property("prop2", [](X const& x) { return x.var; }, [](X& x, int n) mutable { x.var = n; })
+		.property("prop", [](X const& x) mutable
+			{ return x.var; }, [](X& x, int n)
+			{ x.var = n; })
+		.property("prop2", [](X const& x)
+			{ return x.var; }, [](X& x, int n) mutable
+			{ x.var = n; })
 		.property("rprop_direct", &get_rprop_direct<Traits>)
 		.property("rprop_external1", &external_get1)
 		.property("rprop_external2", &external_get2)
@@ -183,12 +378,12 @@ void test_class_()
 		.function("fun3", &X::fun3)
 		.function("fun4", &X::fun4)
 		.function("static_fun", &X::static_fun)
-		.function("static_lambda", [](int x) { return x + 3; })
+		.function("static_lambda", [](int x)
+			{ return x + 3; })
 		.function("extern_fun", &extern_fun<Traits>)
 		.function("toJSON", &X::to_json)
 		.static_("my_static_var", 1)
-		.static_("my_static_const_var", 42, true)
-		;
+		.static_("my_static_const_var", 42, true);
 
 	static_assert(std::is_move_constructible_v<decltype(X_class)>);
 	static_assert(!std::is_move_assignable_v<decltype(X_class)>);
@@ -204,28 +399,20 @@ void test_class_()
 
 	auto Y_class_find = v8pp::class_<Y, Traits>::extend(isolate);
 	Y_class_find.function("toJSON", [](const v8::FunctionCallbackInfo<v8::Value>& args)
-	{
+		{
 		bool const with_functions = true;
-		args.GetReturnValue().Set(v8pp::json_object(args.GetIsolate(), args.This(), with_functions));
-	});
+		args.GetReturnValue().Set(v8pp::json_object(args.GetIsolate(), args.This(), with_functions)); });
 
 	check_ex<std::runtime_error>("already wrapped class X", [isolate]()
-	{
-		v8pp::class_<X, Traits> X_class(isolate);
-	});
+		{ v8pp::class_<X, Traits> X_class(isolate); });
 	check_ex<std::runtime_error>("already inherited class X", [&Y_class]()
-	{
-		Y_class.template inherit<X>();
-	});
+		{ Y_class.template inherit<X>(); });
 	check_ex<std::runtime_error>("unwrapped class Z", [isolate]()
-	{
-		v8pp::class_<Z, Traits>::find_object(isolate, nullptr);
-	});
+		{ v8pp::class_<Z, Traits>::find_object(isolate, nullptr); });
 
 	context
 		.class_("X", X_class)
-		.class_("Y", Y_class)
-		;
+		.class_("Y", Y_class);
 
 	check_eq("C++ exception from X ctor",
 		run_script<std::string>(context, "ret = ''; try { new X(1, 2); } catch(err) { ret = err.message; } ret"),
@@ -254,7 +441,7 @@ void test_class_()
 	check_eq("X::fun3(str)", run_script<std::string>(context, "x = new X(); x.fun3('str')"), "str1");
 	check_eq("X::fun4([foo, bar])",
 		run_script<std::vector<std::string>>(context, "x = new X(); x.fun4(['foo', 'bar'])"),
-		std::vector<std::string>{{ "foo", "bar", "1" }});
+		std::vector<std::string>{ { "foo", "bar", "1" } });
 	check_eq("X::static_fun(1)", run_script<int>(context, "X.static_fun(1)"), 1);
 	check_eq("X::static_lambda(1)", run_script<int>(context, "X.static_lambda(1)"), 4);
 	check_eq("X::extern_fun(5)", run_script<int>(context, "x = new X(); x.extern_fun(5)"), 6);
@@ -265,19 +452,15 @@ void test_class_()
 	check_eq("X::my_static_var after assign", run_script<int>(context, "X.my_static_var = 123; X.my_static_var"), 123);
 
 	check_ex<std::runtime_error>("call method with invalid instance", [&context]()
-	{
-		run_script<int>(context, "x = new X(); f = x.fun1; f(1)");
-	});
+		{ run_script<int>(context, "x = new X(); f = x.fun1; f(1)"); });
 
 	check_eq("JSON.stringify(X)",
 		run_script<std::string>(context, "JSON.stringify({'obj': new X(10), 'arr': [new X(11), new X(12)] })"),
-		R"({"obj":{"key":"obj","var":10},"arr":[{"key":"0","var":11},{"key":"1","var":12}]})"
-	);
+		R"({"obj":{"key":"obj","var":10},"arr":[{"key":"0","var":11},{"key":"1","var":12}]})");
 
 	check_eq("JSON.stringify(Y)",
 		run_script<std::string>(context, "JSON.stringify({'obj': new Y(10), 'arr': [new Y(11), new Y(12)] })"),
-		R"({"obj":{"useX":"function useX() { [native code] }","useX_ptr":"function useX_ptr() { [native code] }","toJSON":"function toJSON() { [native code] }","wprop_external3":10,"wprop_external2":10,"wprop_external1":10,"rprop_external3":10,"rprop_external2":10,"rprop_external1":10,"rprop_direct":10,"prop2":10,"prop":10,"wprop2":10,"wprop":10,"rprop":10,"var":10,"konst":99,"fun1":"function fun1() { [native code] }","fun2":"function fun2() { [native code] }","fun3":"function fun3() { [native code] }","fun4":"function fun4() { [native code] }","static_fun":"function static_fun() { [native code] }","static_lambda":"function static_lambda() { [native code] }","extern_fun":"function extern_fun() { [native code] }"},"arr":[{"useX":"function useX() { [native code] }","useX_ptr":"function useX_ptr() { [native code] }","toJSON":"function toJSON() { [native code] }","wprop_external3":11,"wprop_external2":11,"wprop_external1":11,"rprop_external3":11,"rprop_external2":11,"rprop_external1":11,"rprop_direct":11,"prop2":11,"prop":11,"wprop2":11,"wprop":11,"rprop":11,"var":11,"konst":99,"fun1":"function fun1() { [native code] }","fun2":"function fun2() { [native code] }","fun3":"function fun3() { [native code] }","fun4":"function fun4() { [native code] }","static_fun":"function static_fun() { [native code] }","static_lambda":"function static_lambda() { [native code] }","extern_fun":"function extern_fun() { [native code] }"},{"useX":"function useX() { [native code] }","useX_ptr":"function useX_ptr() { [native code] }","toJSON":"function toJSON() { [native code] }","wprop_external3":12,"wprop_external2":12,"wprop_external1":12,"rprop_external3":12,"rprop_external2":12,"rprop_external1":12,"rprop_direct":12,"prop2":12,"prop":12,"wprop2":12,"wprop":12,"rprop":12,"var":12,"konst":99,"fun1":"function fun1() { [native code] }","fun2":"function fun2() { [native code] }","fun3":"function fun3() { [native code] }","fun4":"function fun4() { [native code] }","static_fun":"function static_fun() { [native code] }","static_lambda":"function static_lambda() { [native code] }","extern_fun":"function extern_fun() { [native code] }"}]})"
-	);
+		R"({"obj":{"useX":"function useX() { [native code] }","useX_ptr":"function useX_ptr() { [native code] }","toJSON":"function toJSON() { [native code] }","wprop_external3":10,"wprop_external2":10,"wprop_external1":10,"rprop_external3":10,"rprop_external2":10,"rprop_external1":10,"rprop_direct":10,"prop2":10,"prop":10,"wprop2":10,"wprop":10,"rprop":10,"var":10,"konst":99,"fun1":"function fun1() { [native code] }","fun2":"function fun2() { [native code] }","fun3":"function fun3() { [native code] }","fun4":"function fun4() { [native code] }","static_fun":"function static_fun() { [native code] }","static_lambda":"function static_lambda() { [native code] }","extern_fun":"function extern_fun() { [native code] }"},"arr":[{"useX":"function useX() { [native code] }","useX_ptr":"function useX_ptr() { [native code] }","toJSON":"function toJSON() { [native code] }","wprop_external3":11,"wprop_external2":11,"wprop_external1":11,"rprop_external3":11,"rprop_external2":11,"rprop_external1":11,"rprop_direct":11,"prop2":11,"prop":11,"wprop2":11,"wprop":11,"rprop":11,"var":11,"konst":99,"fun1":"function fun1() { [native code] }","fun2":"function fun2() { [native code] }","fun3":"function fun3() { [native code] }","fun4":"function fun4() { [native code] }","static_fun":"function static_fun() { [native code] }","static_lambda":"function static_lambda() { [native code] }","extern_fun":"function extern_fun() { [native code] }"},{"useX":"function useX() { [native code] }","useX_ptr":"function useX_ptr() { [native code] }","toJSON":"function toJSON() { [native code] }","wprop_external3":12,"wprop_external2":12,"wprop_external1":12,"rprop_external3":12,"rprop_external2":12,"rprop_external1":12,"rprop_direct":12,"prop2":12,"prop":12,"wprop2":12,"wprop":12,"rprop":12,"var":12,"konst":99,"fun1":"function fun1() { [native code] }","fun2":"function fun2() { [native code] }","fun3":"function fun3() { [native code] }","fun4":"function fun4() { [native code] }","static_fun":"function static_fun() { [native code] }","static_lambda":"function static_lambda() { [native code] }","extern_fun":"function extern_fun() { [native code] }"}]})");
 
 	check_eq("Y object", run_script<int>(context, "y = new Y(-100); y.konst + y.var"), -1);
 
@@ -307,9 +490,7 @@ void test_class_()
 	check("unref y1_obj", v8pp::to_v8(isolate, y1).IsEmpty());
 	y1_obj.Clear();
 	check_ex<std::runtime_error>("y1 unreferenced", [isolate, &y1]()
-	{
-		v8pp::to_v8(isolate, y1);
-	});
+		{ v8pp::to_v8(isolate, y1); });
 
 	v8pp::class_<Y, Traits>::destroy_object(isolate, y2);
 	check("unref y2", !v8pp::from_v8<decltype(y2)>(isolate, y2_obj));
@@ -363,7 +544,8 @@ void test_multiple_inheritance()
 		int z() const { return x; }
 	};
 
-	struct C : A, B
+	struct C : A
+		, B
 	{
 		int x;
 		C() : x(3) {}
@@ -402,21 +584,17 @@ void test_multiple_inheritance()
 
 		.property("F", &C::f, &C::set_f)
 		.property("G", &C::g, &C::set_g)
-		.property("H", &C::h, &C::set_h)
-		;
+		.property("H", &C::h, &C::set_h);
 
 	context.class_("C", C_class);
 	check_eq("get attributes", run_script<int>(context, "c = new C(); c.xA + c.xB + c.xC"), 1 + 2 + 3);
-	check_eq("set attributes", run_script<int>(context,
-		"c = new C(); c.xA = 10; c.xB = 20; c.xC = 30; c.xA + c.xB + c.xC"), 10 + 20 + 30);
+	check_eq("set attributes", run_script<int>(context, "c = new C(); c.xA = 10; c.xB = 20; c.xC = 30; c.xA + c.xB + c.xC"), 10 + 20 + 30);
 
 	check_eq("functions", run_script<int>(context, "c = new C(); c.f() + c.g() + c.h()"), 1 + 2 + 3);
 	check_eq("z functions", run_script<int>(context, "c = new C(); c.zA() + c.zB() + c.zC()"), 1 + 2 + 3);
 
-	check_eq("rproperties", run_script<int>(context,
-		"c = new C(); c.rF + c.rG + c.rH"), 1 + 2 + 3);
-	check_eq("rwproperties", run_script<int>(context,
-		"c = new C(); c.F = 100; c.G = 200; c.H = 300; c.F + c.G + c.H"), 100 + 200 + 300);
+	check_eq("rproperties", run_script<int>(context, "c = new C(); c.rF + c.rG + c.rH"), 1 + 2 + 3);
+	check_eq("rwproperties", run_script<int>(context, "c = new C(); c.F = 100; c.G = 200; c.H = 300; c.F + c.G + c.H"), 100 + 200 + 300);
 }
 
 template<typename Traits>
@@ -467,10 +645,12 @@ void test_auto_wrap_objects()
 	X_class
 		.template ctor<int>()
 		.auto_wrap_objects(true)
-		.property("x", &X::get_x)
-		;
+		.property("x", &X::get_x);
 
-	auto f = [](int x) { return X(x); };
+	auto f = [](int x)
+	{
+		return X(x);
+	};
 
 	context.class_("X", X_class);
 	context.function<decltype(f), Traits>("f", std::move(f));

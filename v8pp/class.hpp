@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
 
 #include "v8pp/config.hpp"
 #include "v8pp/function.hpp"
+#include "v8pp/metadata.hpp"
 #include "v8pp/property.hpp"
 #include "v8pp/ptr_traits.hpp"
 #include "v8pp/type_info.hpp"
@@ -38,8 +40,8 @@ public:
 	using const_pointer_type = typename Traits::const_pointer_type;
 	using object_id = typename Traits::object_id;
 
-	using ctor_function = std::function<std::pair<pointer_type, size_t> (v8::FunctionCallbackInfo<v8::Value> const& args)>;
-	using dtor_function = std::function<void (v8::Isolate*, pointer_type const&)>;
+	using ctor_function = std::function<std::pair<pointer_type, size_t>(v8::FunctionCallbackInfo<v8::Value> const& args)>;
+	using dtor_function = std::function<void(v8::Isolate*, pointer_type const&)>;
 	using cast_function = pointer_type (*)(pointer_type const&);
 
 	object_registry(v8::Isolate* isolate, type_info const& type, dtor_function&& dtor);
@@ -160,7 +162,12 @@ private:
 
 	classes_info::iterator find(type_info const& type);
 
-	enum class operation { get, add, remove };
+	enum class operation
+	{
+		get,
+		add,
+		remove
+	};
 	static classes* instance(operation op, v8::Isolate* isolate);
 };
 
@@ -209,18 +216,48 @@ private:
 		Traits::destroy(Traits::template static_pointer_cast<T>(ptr));
 	}
 
-	explicit class_(v8::Isolate* isolate, detail::type_info const& existing)
-		: class_info_(detail::classes::find<Traits>(isolate, existing))
+	static dtor_function validate_metadata(metadata::symbol const& metadata_symbol, dtor_function destroy)
 	{
+		if (metadata_symbol.kind != metadata::symbol_kind::constructor)
+		{
+			throw std::invalid_argument("v8pp::class_ metadata must describe a constructor");
+		}
+		return destroy;
+	}
+
+	explicit class_(v8::Isolate* isolate, detail::type_info const& existing,
+		metadata::symbol* metadata_symbol)
+		: class_info_(detail::classes::find<Traits>(isolate, existing))
+		, metadata_(metadata_symbol)
+	{
+		if (metadata_symbol && metadata_symbol->kind != metadata::symbol_kind::constructor)
+		{
+			throw std::invalid_argument("v8pp::class_ metadata must describe a constructor");
+		}
 	}
 
 public:
 	explicit class_(v8::Isolate* isolate, dtor_function destroy = &object_destroy)
 		: class_info_(detail::classes::add<Traits>(isolate, detail::type_id<T>(),
-			[destroy = std::move(destroy)](v8::Isolate* isolate, pointer_type const& obj)
-			{
-				destroy(isolate, Traits::template static_pointer_cast<T>(obj));
-			}))
+			  [destroy = std::move(destroy)](v8::Isolate* isolate, pointer_type const& obj)
+			  {
+				  destroy(isolate, Traits::template static_pointer_cast<T>(obj));
+			  }))
+		, metadata_(nullptr)
+	{
+	}
+
+	/// Create a wrapped class and record its function bindings in metadata
+	explicit class_(v8::Isolate* isolate, metadata::symbol& metadata_symbol,
+		dtor_function destroy = &object_destroy)
+		: class_(isolate, validate_metadata(metadata_symbol, std::move(destroy)))
+	{
+		metadata_ = &metadata_symbol;
+	}
+
+	explicit class_(v8::Isolate* isolate, metadata::registry& registry,
+		std::string name, std::string description = {}, dtor_function destroy = &object_destroy)
+		: class_(isolate, registry.constructor(std::move(name), std::move(description)), std::move(destroy))
 	{
 	}
 
@@ -233,7 +270,13 @@ public:
 	/// Find existing class_ to extend bindings
 	static class_ extend(v8::Isolate* isolate)
 	{
-		return class_(isolate, detail::type_id<T>());
+		return class_(isolate, detail::type_id<T>(), nullptr);
+	}
+
+	/// Find an existing class_ and record additional bindings in metadata
+	static class_ extend(v8::Isolate* isolate, metadata::symbol& metadata_symbol)
+	{
+		return class_(isolate, detail::type_id<T>(), &metadata_symbol);
 	}
 
 	/// Set class constructor signature
@@ -241,10 +284,9 @@ public:
 	class_& ctor(ctor_function create = &Create::call)
 	{
 		class_info_.set_ctor([create = std::move(create)](v8::FunctionCallbackInfo<v8::Value> const& args)
-		{
+			{
 			auto object = create(args);
-			return std::make_pair(object, Traits::object_size(object));
-		});
+			return std::make_pair(object, Traits::object_size(object)); });
 		return *this;
 	}
 
@@ -256,10 +298,8 @@ public:
 		// TODO: std::is_convertible<T*, U*> and check for duplicates in hierarchy?
 		auto& base = detail::classes::find<Traits>(isolate(), detail::type_id<U>());
 		class_info_.add_base(base, [](pointer_type const& ptr)
-		{
-			return pointer_type{Traits::template static_pointer_cast<U>(
-				Traits::template static_pointer_cast<T>(ptr))};
-		});
+			{ return pointer_type{ Traits::template static_pointer_cast<U>(
+				  Traits::template static_pointer_cast<T>(ptr)) }; });
 		class_info_.js_function_template()->Inherit(base.class_function_template());
 		return *this;
 	}
@@ -275,30 +315,113 @@ public:
 	template<typename Function>
 	class_& function(std::string_view name, Function&& func, v8::PropertyAttribute attr = v8::None)
 	{
-		constexpr bool is_mem_fun = std::is_member_function_pointer_v<Function>;
+		return bind_function(name, std::forward<Function>(func), attr, nullptr, true);
+	}
 
-		static_assert(is_mem_fun || detail::is_callable<Function>::value,
-			"Function must be pointer to member function or callable object");
+	/// Set a class function and record documentation metadata
+	template<typename Function>
+	class_& function(std::string_view name, Function&& func,
+		metadata::function_options const& options, v8::PropertyAttribute attr = v8::None)
+	{
+		return bind_function(name, std::forward<Function>(func), attr, &options, true);
+	}
 
-		v8::HandleScope scope(isolate());
-
-		v8::Local<v8::Name> v8_name = v8pp::to_v8(isolate(), name);
-		v8::Local<v8::Data> wrapped_fun;
-
-		if constexpr (is_mem_fun)
+	/// Bind a class function using an authoritative metadata descriptor
+	template<typename Function>
+	class_& function(metadata::function const& binding, Function&& func,
+		v8::PropertyAttribute attr = v8::None)
+	{
+		using function_type = std::decay_t<Function>;
+		if (binding.static_ && std::is_member_function_pointer_v<function_type>)
 		{
-			using mem_func_type = typename detail::function_traits<Function>::template pointer_type<T>;
-			wrapped_fun = wrap_function_template<mem_func_type, Traits>(isolate(), mem_func_type(std::forward<Function>(func)));
+			throw std::invalid_argument("member function metadata cannot be static");
 		}
-		else
-		{
-			wrapped_fun = wrap_function_template<Function, Traits>(isolate(), std::forward<Function>(func));
-			class_info_.js_function_template()->Set(v8_name, wrapped_fun, attr);
-		}
+		if (metadata_) metadata_->record(binding);
+		return bind_function(binding.name, std::forward<Function>(func), attr, nullptr, false);
+	}
 
-		class_info_.class_function_template()->PrototypeTemplate()->Set(v8_name, wrapped_fun, attr);
+	class_& static_function(std::string_view name, v8::FunctionCallback callback,
+		metadata::function_options const& options = {})
+	{
+		if (metadata_) metadata_->record(metadata::function_of<v8::FunctionCallback>(name, options, true));
+		js_function_template()->Set(v8pp::to_v8(isolate(), name),
+			v8::FunctionTemplate::New(isolate(), callback));
 		return *this;
 	}
+
+	/// Attach a static callback to an already materialized constructor
+	class_& static_function(v8::Local<v8::Function> constructor, std::string_view name,
+		v8::FunctionCallback callback, metadata::function_options const& options = {})
+	{
+		if (metadata_) metadata_->record(metadata::function_of<v8::FunctionCallback>(name, options, true));
+		auto context = isolate()->GetCurrentContext();
+		auto function = v8::Function::New(context, callback).ToLocalChecked();
+		constructor->Set(context, v8pp::to_v8(isolate(), name), function).Check();
+		return *this;
+	}
+
+	class_& prototype_function(std::string_view name, v8::FunctionCallback callback,
+		metadata::function_options const& options = {})
+	{
+		if (metadata_) metadata_->record(metadata::function_of<v8::FunctionCallback>(name, options, false));
+		class_function_template()->PrototypeTemplate()->Set(v8pp::to_v8(isolate(), name),
+			v8::FunctionTemplate::New(isolate(), callback));
+		return *this;
+	}
+
+	class_& document_property(std::string_view name, metadata::property_options options)
+	{
+		if (metadata_)
+		{
+			metadata_->record({ std::string(name), std::move(options.description),
+				{ std::move(options.type), {}, false }, options.readonly, options.static_ });
+		}
+		return *this;
+	}
+
+	/// Install V8 function-template accessors and record their property metadata
+	class_& accessor_property(std::string_view name,
+		v8::Local<v8::FunctionTemplate> getter,
+		v8::Local<v8::FunctionTemplate> setter,
+		metadata::property_options options)
+	{
+		bool const readonly = setter.IsEmpty();
+		options.readonly = readonly;
+		options.static_ = false;
+		document_property(name, std::move(options));
+		class_function_template()->PrototypeTemplate()->SetAccessorProperty(
+			v8pp::to_v8(isolate(), name).template As<v8::Name>(), getter, setter,
+			readonly ? v8::ReadOnly : v8::None);
+		return *this;
+	}
+
+	class_& document_base(std::string name)
+	{
+		if (metadata_ && std::find(metadata_->bases.begin(), metadata_->bases.end(), name) == metadata_->bases.end())
+		{
+			metadata_->bases.push_back(std::move(name));
+		}
+		return *this;
+	}
+
+	class_& publish(v8::Local<v8::Object> global)
+	{
+		if (!metadata_) throw std::logic_error("v8pp::class_::publish requires metadata");
+		auto context = isolate()->GetCurrentContext();
+		auto constructor = js_function_template()->GetFunction(context).ToLocalChecked();
+		global->Set(context, v8pp::to_v8(isolate(), metadata_->name), constructor).Check();
+		return *this;
+	}
+
+	class_& publish(v8::Local<v8::Object> global, v8::Local<v8::Function> constructor)
+	{
+		if (!metadata_) throw std::logic_error("v8pp::class_::publish requires metadata");
+		auto context = isolate()->GetCurrentContext();
+		global->Set(context, v8pp::to_v8(isolate(), metadata_->name), constructor).Check();
+		return *this;
+	}
+
+	metadata::symbol const* metadata_symbol() const { return metadata_; }
 
 	/// Set class member variable
 	template<typename Attribute>
@@ -319,6 +442,16 @@ public:
 		return *this;
 	}
 
+	/// Set a documented class member variable
+	template<typename Attribute>
+	class_& var(std::string_view name, Attribute attribute, metadata::property_options options)
+	{
+		options.readonly = false;
+		options.static_ = false;
+		document_property(name, std::move(options));
+		return var(name, attribute);
+	}
+
 	/// Set read/write class property with getter and setter
 	template<typename GetFunction, typename SetFunction = detail::none>
 	class_& property(std::string_view name, GetFunction&& get, SetFunction&& set = {})
@@ -331,11 +464,8 @@ public:
 			typename detail::function_traits<SetFunction>::template pointer_type<T>,
 			typename std::decay_t<SetFunction>>;
 
-		static_assert(std::is_member_function_pointer_v<GetFunction>
-			|| detail::is_callable<Getter>::value, "GetFunction must be callable");
-		static_assert(std::is_member_function_pointer_v<SetFunction>
-			|| detail::is_callable<Setter>::value
-			|| std::same_as<Setter, detail::none>, "SetFunction must be callable");
+		static_assert(std::is_member_function_pointer_v<GetFunction> || detail::is_callable<Getter>::value, "GetFunction must be callable");
+		static_assert(std::is_member_function_pointer_v<SetFunction> || detail::is_callable<Setter>::value || std::same_as<Setter, detail::none>, "SetFunction must be callable");
 
 		using GetClass = std::conditional_t<detail::function_with_object<Getter, T>, T, detail::none>;
 		using SetClass = std::conditional_t<detail::function_with_object<Setter, T>, T, detail::none>;
@@ -348,8 +478,30 @@ public:
 		v8::AccessorNameSetterCallback setter = property_type::is_readonly ? nullptr : property_type::template set<Traits>;
 		v8::Local<v8::String> v8_name = v8pp::to_v8(isolate(), name);
 		v8::Local<v8::Value> data = detail::external_data::set(isolate(), property_type(std::move(get), std::move(set)));
-		class_info_.class_function_template()->PrototypeTemplate()->SetNativeDataProperty(v8_name, getter, setter, data, v8::PropertyAttribute::DontDelete);
+		class_info_.class_function_template()->PrototypeTemplate()->SetNativeDataProperty(v8_name, getter, setter, data,
+			v8::PropertyAttribute(v8::DontDelete | (property_type::is_readonly ? v8::ReadOnly : 0)));
 		return *this;
+	}
+
+	/// Set a documented read-only class property
+	template<typename GetFunction>
+	class_& property(std::string_view name, GetFunction&& get, metadata::property_options options)
+	{
+		options.readonly = true;
+		options.static_ = false;
+		document_property(name, std::move(options));
+		return property(name, std::forward<GetFunction>(get));
+	}
+
+	/// Set a documented read/write class property
+	template<typename GetFunction, typename SetFunction>
+	class_& property(std::string_view name, GetFunction&& get, SetFunction&& set,
+		metadata::property_options options)
+	{
+		options.readonly = false;
+		options.static_ = false;
+		document_property(name, std::move(options));
+		return property(name, std::forward<GetFunction>(get), std::forward<SetFunction>(set));
 	}
 
 	/// Set value as a read-only constant
@@ -358,10 +510,19 @@ public:
 	{
 		v8::HandleScope scope(isolate());
 
-		class_info_.class_function_template()->PrototypeTemplate()
-			->Set(v8pp::to_v8(isolate(), name), to_v8(isolate(), value),
-				v8::PropertyAttribute(v8::ReadOnly | v8::DontDelete));
+		class_info_.class_function_template()->PrototypeTemplate()->Set(v8pp::to_v8(isolate(), name), to_v8(isolate(), value),
+			v8::PropertyAttribute(v8::ReadOnly | v8::DontDelete));
 		return *this;
+	}
+
+	/// Set a documented read-only prototype value
+	template<typename Value>
+	class_& const_(std::string_view name, Value const& value, metadata::property_options options)
+	{
+		options.readonly = true;
+		options.static_ = false;
+		document_property(name, std::move(options));
+		return const_(name, value);
 	}
 
 	/// Set value as a class static property
@@ -371,9 +532,32 @@ public:
 		v8::HandleScope scope(isolate());
 
 		class_info_.js_function_template()->GetFunction(isolate()->GetCurrentContext()).ToLocalChecked()
-			->DefineOwnProperty(isolate()->GetCurrentContext(),
-				v8pp::to_v8(isolate(), name), to_v8(isolate(), value),
+			->DefineOwnProperty(isolate()->GetCurrentContext(), v8pp::to_v8(isolate(), name),
+				to_v8(isolate(), value),
 				v8::PropertyAttribute(v8::DontDelete | (readonly ? v8::ReadOnly : 0))).FromJust();
+		return *this;
+	}
+
+	/// Set a documented static value
+	template<typename Value>
+	class_& static_(std::string_view const& name, Value const& value,
+		metadata::property_options options)
+	{
+		bool const readonly = options.readonly;
+		options.static_ = true;
+		document_property(name, std::move(options));
+
+		auto data = detail::external_data::set(isolate(),
+			documented_static_value(isolate(), to_v8(isolate(), value)));
+		auto getter = v8::FunctionTemplate::New(isolate(), &documented_static_get, data);
+		v8::Local<v8::FunctionTemplate> setter;
+		if (!readonly)
+		{
+			setter = v8::FunctionTemplate::New(isolate(), &documented_static_set, data);
+		}
+		js_function_template()->SetAccessorProperty(
+			v8pp::to_v8(isolate(), name).template As<v8::Name>(), getter, setter,
+			v8::PropertyAttribute(v8::DontDelete | (readonly ? v8::ReadOnly : 0)));
 		return *this;
 	}
 
@@ -467,6 +651,40 @@ public:
 	}
 
 private:
+	template<typename Function>
+	class_& bind_function(std::string_view name, Function&& func,
+		v8::PropertyAttribute attr, metadata::function_options const* options, bool record)
+	{
+		using function_type = std::decay_t<Function>;
+		constexpr bool is_mem_fun = std::is_member_function_pointer_v<function_type>;
+
+		static_assert(is_mem_fun || detail::is_callable<function_type>::value,
+			"Function must be pointer to member function or callable object");
+
+		v8::HandleScope scope(isolate());
+		v8::Local<v8::Name> v8_name = v8pp::to_v8(isolate(), name);
+		v8::Local<v8::Data> wrapped_fun;
+
+		if constexpr (is_mem_fun)
+		{
+			using mem_func_type = typename detail::function_traits<function_type>::template pointer_type<T>;
+			wrapped_fun = wrap_function_template<mem_func_type, Traits>(isolate(), mem_func_type(std::forward<Function>(func)));
+		}
+		else
+		{
+			wrapped_fun = wrap_function_template<function_type, Traits>(isolate(), std::forward<Function>(func));
+			class_info_.js_function_template()->Set(v8_name, wrapped_fun, attr);
+		}
+
+		class_info_.class_function_template()->PrototypeTemplate()->Set(v8_name, wrapped_fun, attr);
+		if (record && metadata_)
+		{
+			metadata_->record(metadata::function_of<function_type>(name,
+				options ? *options : metadata::function_options{}, !is_mem_fun));
+		}
+		return *this;
+	}
+
 	template<typename Attribute>
 	static void member_get(v8::Local<v8::Name>,
 		v8::PropertyCallbackInfo<v8::Value> const& info)
@@ -504,9 +722,34 @@ private:
 			{
 				isolate->ThrowException(throw_ex(isolate, ex.what()));
 			}
-			//TODO: info.GetReturnValue().Set(false);
+			// TODO: info.GetReturnValue().Set(false);
 		}
 	}
+
+	struct documented_static_value
+	{
+		v8::Global<v8::Value> value;
+
+		documented_static_value(v8::Isolate* isolate, v8::Local<v8::Value> initial_value)
+			: value(isolate, initial_value)
+		{
+		}
+	};
+
+	static void documented_static_get(v8::FunctionCallbackInfo<v8::Value> const& args)
+	{
+		auto& property = detail::external_data::get<documented_static_value>(args.Data());
+		args.GetReturnValue().Set(property.value.Get(args.GetIsolate()));
+	}
+
+	static void documented_static_set(v8::FunctionCallbackInfo<v8::Value> const& args)
+	{
+		if (!args.Length()) return;
+		auto& property = detail::external_data::get<documented_static_value>(args.Data());
+		property.value.Reset(args.GetIsolate(), args[0]);
+	}
+
+	metadata::symbol* metadata_;
 };
 
 /// Interface to access C++ classes bound to V8
