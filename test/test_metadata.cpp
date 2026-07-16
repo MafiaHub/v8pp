@@ -122,7 +122,7 @@ void test_metadata()
 	auto documentation = v8pp::metadata::docs("Promise<string>",
 		{ v8pp::metadata::param("id", "number", false, "Entity identifier"),
 			v8pp::metadata::param("cached", "boolean", true, "Allow cached data") },
-		"Looks up an entity", "The entity name", "2.2.0", "Use find instead",
+		"Looks up an entity", "The entity name", "1.5.0", "Use find instead",
 		{ "lookup(1)", "lookup(1, true)" });
 	auto documented_function = v8pp::metadata::function_of<decltype(&lookup)>("lookup", documentation, true);
 	check_eq("docs return override", documented_function.call_signature.return_type.name,
@@ -133,7 +133,7 @@ void test_metadata()
 	check_eq("docs function description", documented_function.description, std::string("Looks up an entity"));
 	check_eq("docs return description", documented_function.call_signature.return_description,
 		std::string("The entity name"));
-	check_eq("docs since", documented_function.since, std::string("2.2.0"));
+	check_eq("docs since", documented_function.since, std::string("1.5.0"));
 	check_eq("docs deprecated", documented_function.deprecated, std::string("Use find instead"));
 	check_eq("docs examples", documented_function.examples.size(), std::size_t{ 2 });
 	check_eq("docs static marker", documented_function.static_, true);
