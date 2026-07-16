@@ -60,7 +60,37 @@ Some of them could be:
 v8pp supports V8 versions after 6.3 with `v8::Isolate` usage in API. There are 2 targets for binding:
 
   * `v8pp::module`, a wrapper class around `v8::ObjectTemplate`
-  * `v8pp::class_`, a template class wrapper around `v8::FunctionTemplate`
+* `v8pp::class_`, a template class wrapper around `v8::FunctionTemplate`
+
+### Binding metadata
+
+Bindings may optionally populate a neutral metadata catalog. Names, callbacks, JavaScript signatures, and documentation are declared together at the binding call; no parallel descriptor lookup is required.
+
+```cpp
+auto& api = v8pp::metadata::catalog("my-mod-client");
+v8pp::module camera(isolate, api, "Camera", "Client camera helpers");
+camera.function("worldToScreen", &world_to_screen_callback,
+    v8pp::metadata::docs("ScreenPosition", {
+        v8pp::metadata::param("x", "number"),
+        v8pp::metadata::param("y", "number"),
+        v8pp::metadata::param("z", "number"),
+    }, "Projects a world position onto the screen"));
+camera.publish(global);
+```
+
+Ordinary typed functions can still infer their C++ signature. `metadata::docs` provides the authoritative JavaScript signature for raw V8 callbacks and for APIs whose JavaScript types differ from their native representation. `export_catalog_from_environment` can write the completed catalog when binding registration finishes.
+
+Every symbol declares its runtime shape: `global_object` for a singleton value, `constructor` for an instantiable V8 class, or `data_type` for a structural type which has no runtime value. Registries can also describe properties and standalone global variables. These are renderer-neutral and emitted alongside functions in the schema-v2 JSON document:
+
+```cpp
+auto& player = api.constructor("Player", "A connected player");
+player.add_property("id", v8pp::metadata::type_of<std::uint32_t>(),
+    "Network identifier", true);
+auto& position = api.data_type("ScreenPosition", "A projection result");
+position.add_property("x", v8pp::metadata::type_of<double>());
+api.variable_("LocalPlayer", { "Player | null", {}, false },
+    "The local player when connected");
+```
 
 Both of them require a pointer to `v8::Isolate` instance. They allows to bind from C++ code such items as variables, functions, constants with a function `set(name, item)`:
 

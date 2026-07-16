@@ -1,11 +1,56 @@
 #pragma once
 
+#include <stdexcept>
+
 #include <v8.h>
 
 #include "v8pp/function.hpp"
+#include "v8pp/metadata.hpp"
 #include "v8pp/property.hpp"
 
 namespace v8pp {
+
+template<typename Function, typename Traits = raw_ptr_traits>
+void bind_function(v8::Isolate* isolate, v8::Local<v8::Object> object,
+	metadata::symbol& metadata_symbol, std::string_view name, Function&& function,
+	metadata::function_options const& options = {})
+{
+	using function_type = std::decay_t<Function>;
+	static_assert(detail::is_callable<function_type>::value, "Function must be callable");
+	metadata_symbol.record(metadata::function_of<function_type>(name, options));
+	auto context = isolate->GetCurrentContext();
+	auto wrapped = wrap_function_template<Function, Traits>(isolate, std::forward<Function>(function));
+	object->Set(context, v8pp::to_v8(isolate, name), wrapped->GetFunction(context).ToLocalChecked()).Check();
+}
+
+template<typename Data>
+void set_global(v8::Isolate* isolate, v8::Local<v8::Object> global,
+	metadata::registry& registry, std::string name, v8::Local<Data> value,
+	metadata::variable_options options)
+{
+	registry.variable_(name, { std::move(options.type), {}, false },
+		std::move(options.description), options.readonly);
+	global->Set(isolate->GetCurrentContext(), v8pp::to_v8(isolate, name), value).Check();
+}
+
+inline void set_global_accessor(v8::Isolate* isolate, v8::Local<v8::Object> global,
+	metadata::registry& registry, std::string name, v8::Local<v8::Function> getter,
+	metadata::variable_options options)
+{
+	registry.variable_(name, { std::move(options.type), {}, false },
+		std::move(options.description), options.readonly);
+	global->SetAccessorProperty(v8pp::to_v8(isolate, name).As<v8::Name>(), getter);
+}
+
+inline void publish(v8::Isolate* isolate, v8::Local<v8::Object> global,
+	metadata::symbol const& metadata_symbol, v8::Local<v8::Object> value)
+{
+	if (metadata_symbol.kind != metadata::symbol_kind::global_object)
+	{
+		throw std::invalid_argument("v8pp::publish metadata must describe a global object");
+	}
+	global->Set(isolate->GetCurrentContext(), v8pp::to_v8(isolate, metadata_symbol.name), value).Check();
+}
 
 template<typename T, typename Traits>
 class class_;
@@ -18,6 +63,25 @@ public:
 	explicit module(v8::Isolate* isolate)
 		: isolate_(isolate)
 		, obj_(v8::ObjectTemplate::New(isolate))
+		, metadata_(nullptr)
+	{
+	}
+
+	/// Create a module and record its bindings in a metadata object
+	explicit module(v8::Isolate* isolate, metadata::symbol& metadata_symbol)
+		: isolate_(isolate)
+		, obj_(v8::ObjectTemplate::New(isolate))
+		, metadata_(&metadata_symbol)
+	{
+		if (metadata_symbol.kind != metadata::symbol_kind::global_object)
+		{
+			throw std::invalid_argument("v8pp::module metadata must describe a global object");
+		}
+	}
+
+	explicit module(v8::Isolate* isolate, metadata::registry& registry,
+		std::string name, std::string description = {})
+		: module(isolate, registry.global_object(std::move(name), std::move(description)))
 	{
 	}
 
@@ -25,7 +89,21 @@ public:
 	explicit module(v8::Isolate* isolate, v8::Local<v8::ObjectTemplate> obj)
 		: isolate_(isolate)
 		, obj_(obj)
+		, metadata_(nullptr)
 	{
+	}
+
+	/// Create a module for an existing ObjectTemplate and record binding metadata
+	explicit module(v8::Isolate* isolate, v8::Local<v8::ObjectTemplate> obj,
+		metadata::symbol& metadata_symbol)
+		: isolate_(isolate)
+		, obj_(obj)
+		, metadata_(&metadata_symbol)
+	{
+		if (metadata_symbol.kind != metadata::symbol_kind::global_object)
+		{
+			throw std::invalid_argument("v8pp::module metadata must describe a global object");
+		}
 	}
 
 	module(module const&) = delete;
@@ -68,10 +146,61 @@ public:
 	template<typename Function, typename Traits = raw_ptr_traits>
 	module& function(std::string_view name, Function&& func)
 	{
+		return function<Function, Traits>(name, std::forward<Function>(func), {});
+	}
+
+	/// Set a C++ function and record documentation metadata
+	template<typename Function, typename Traits = raw_ptr_traits>
+	module& function(std::string_view name, Function&& func,
+		metadata::function_options const& options)
+	{
 		using Fun = typename std::decay_t<Function>;
 		static_assert(detail::is_callable<Fun>::value, "Function must be callable");
+		if (metadata_)
+		{
+			metadata_->record(metadata::function_of<Fun>(name, options));
+		}
 		return value(name, wrap_function_template<Function, Traits>(isolate_, std::forward<Function>(func)));
 	}
+
+	/// Bind a C++ function using an authoritative metadata descriptor
+	template<typename Function, typename Traits = raw_ptr_traits>
+	module& function(metadata::function const& binding, Function&& func)
+	{
+		using Fun = typename std::decay_t<Function>;
+		static_assert(detail::is_callable<Fun>::value, "Function must be callable");
+		if (metadata_) metadata_->record(binding);
+		return value(binding.name,
+			wrap_function_template<Function, Traits>(isolate_, std::forward<Function>(func)));
+	}
+
+	module& document_property(std::string_view name, metadata::property_options options)
+	{
+		if (metadata_)
+		{
+			metadata_->record({ std::string(name), std::move(options.description),
+				{ std::move(options.type), {}, false }, options.readonly, options.static_ });
+		}
+		return *this;
+	}
+
+	module& publish(v8::Local<v8::Object> global)
+	{
+		if (!metadata_) throw std::logic_error("v8pp::module::publish requires metadata");
+		auto context = isolate_->GetCurrentContext();
+		global->Set(context, v8pp::to_v8(isolate_, metadata_->name), new_instance()).Check();
+		return *this;
+	}
+
+	module& publish(v8::Local<v8::Object> global, v8::Local<v8::Object> instance)
+	{
+		if (!metadata_) throw std::logic_error("v8pp::module::publish requires metadata");
+		auto context = isolate_->GetCurrentContext();
+		global->Set(context, v8pp::to_v8(isolate_, metadata_->name), instance).Check();
+		return *this;
+	}
+
+	metadata::symbol const* metadata_symbol() const { return metadata_; }
 
 	/// Set a C++ variable in the module with specified name
 	template<typename Variable>
@@ -96,8 +225,7 @@ public:
 		using Setter = typename std::decay_t<SetFunction>;
 
 		static_assert(detail::is_callable<Getter>::value, "GetFunction must be callable");
-		static_assert(detail::is_callable<Setter>::value
-			|| std::same_as<Setter, detail::none>, "SetFunction must be callable");
+		static_assert(detail::is_callable<Setter>::value || std::same_as<Setter, detail::none>, "SetFunction must be callable");
 
 		using property_type = v8pp::property<Getter, Setter, detail::none, detail::none>;
 		using Traits = detail::none;
@@ -160,6 +288,7 @@ private:
 
 	v8::Isolate* isolate_;
 	v8::Local<v8::ObjectTemplate> obj_;
+	metadata::symbol* metadata_;
 };
 
 } // namespace v8pp

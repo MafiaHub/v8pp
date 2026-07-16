@@ -27,23 +27,24 @@ void run_tests()
 	void test_property();
 	void test_object();
 	void test_json();
+	void test_metadata();
 
-	std::pair<char const*, void (*)()> tests[] =
-	{
+	std::pair<char const*, void (*)()> tests[] = {
 		{ "test_type_info", test_type_info },
-		{"test_utility", test_utility},
-		{"test_context", test_context},
-		{"test_convert", test_convert},
-		{"test_throw_ex", test_throw_ex},
-		{"test_function", test_function},
-		{"test_ptr_traits", test_ptr_traits},
-		{"test_call_v8", test_call_v8},
-		{"test_call_from_v8", test_call_from_v8},
-		{"test_module", test_module},
-		{"test_class", test_class},
-		{"test_property", test_property},
-		{"test_object", test_object},
-		{"test_json", test_json},
+		{ "test_utility", test_utility },
+		{ "test_context", test_context },
+		{ "test_convert", test_convert },
+		{ "test_throw_ex", test_throw_ex },
+		{ "test_function", test_function },
+		{ "test_ptr_traits", test_ptr_traits },
+		{ "test_call_v8", test_call_v8 },
+		{ "test_call_from_v8", test_call_from_v8 },
+		{ "test_module", test_module },
+		{ "test_class", test_class },
+		{ "test_property", test_property },
+		{ "test_object", test_object },
+		{ "test_json", test_json },
+		{ "test_metadata", test_metadata },
 	};
 
 	for (auto const& test : tests)
@@ -75,22 +76,21 @@ int main(int argc, char const* argv[])
 		if (arg == "-h" || arg == "--help")
 		{
 			std::cout << "Usage: " << argv[0] << " [arguments] [script]\n"
-				<< "Arguments:\n"
-				<< "  --help,-h           Print this message and exit\n"
-				<< "  --version,-v        Print V8 version\n"
-				<< "  --lib-path <dir>    Set <dir> for plugins library path\n"
-				<< "  --run-tests         Run library tests\n"
-				;
+					  << "Arguments:\n"
+					  << "  --help,-h           Print this message and exit\n"
+					  << "  --version,-v        Print V8 version\n"
+					  << "  --lib-path <dir>    Set <dir> for plugins library path\n"
+					  << "  --run-tests         Run library tests\n";
 			return EXIT_SUCCESS;
 		}
 		else if (arg == "-v" || arg == "--version")
 		{
 			std::cout << "V8 version " << v8::V8::GetVersion() << std::endl;
 			std::cout << "v8pp version " << v8pp::version()
-				<< " (major=" << v8pp::version_major()
-				<< " minor=" << v8pp::version_minor()
-				<< " patch=" << v8pp::version_patch()
-				<< ")\n";
+					  << " (major=" << v8pp::version_major()
+					  << " minor=" << v8pp::version_minor()
+					  << " patch=" << v8pp::version_patch()
+					  << ")\n";
 			std::cout << "v8pp build options " << v8pp::build_options() << std::endl;
 		}
 		else if (arg == "--lib-path")
@@ -112,7 +112,7 @@ int main(int argc, char const* argv[])
 	// for v8pp::class_ tests
 	v8::V8::SetFlagsFromString("--expose_gc");
 
-	//v8::V8::InitializeICU();
+	// v8::V8::InitializeICU();
 	v8::V8::InitializeExternalStartupData(argv[0]);
 #if V8_MAJOR_VERSION >= 7
 	std::unique_ptr<v8::Platform> platform(v8::platform::NewDefaultPlatform());
