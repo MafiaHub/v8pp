@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdexcept>
+#include <type_traits>
 
 #include <v8.h>
 
@@ -130,7 +131,49 @@ public:
 	template<typename Data>
 	module& value(std::string_view name, v8::Local<Data> value)
 	{
+		static_assert(!std::is_base_of_v<v8::Object, Data>,
+			"Concrete V8 objects must be set on a materialized module instance");
 		obj_->Set(v8pp::to_v8(isolate_, name), value);
+		return *this;
+	}
+
+	/// Set a V8 value and record its property metadata
+	template<typename Data>
+	module& value(std::string_view name, v8::Local<Data> value,
+		metadata::property_options options)
+	{
+		static_assert(!std::is_base_of_v<v8::Object, Data>,
+			"Concrete V8 objects must be set on a materialized module instance");
+		bool const readonly = options.readonly;
+		document_property(name, std::move(options));
+		obj_->Set(v8pp::to_v8(isolate_, name), value, readonly ? v8::ReadOnly : v8::None);
+		return *this;
+	}
+
+	/// Set a concrete V8 value on an instance created from this module.
+	/// Use this overload for values such as Object and Array, which V8 does not allow
+	/// to be stored directly in an ObjectTemplate.
+	template<typename Data>
+	module& value(v8::Local<v8::Object> instance, std::string_view name,
+		v8::Local<Data> value)
+	{
+		static_assert(std::is_base_of_v<v8::Value, Data>,
+			"Materialized module instance properties must be V8 values");
+		instance->Set(isolate_->GetCurrentContext(), v8pp::to_v8(isolate_, name), value).Check();
+		return *this;
+	}
+
+	/// Set a concrete V8 value on a module instance and record its property metadata.
+	template<typename Data>
+	module& value(v8::Local<v8::Object> instance, std::string_view name,
+		v8::Local<Data> value, metadata::property_options options)
+	{
+		static_assert(std::is_base_of_v<v8::Value, Data>,
+			"Materialized module instance properties must be V8 values");
+		bool const readonly = options.readonly;
+		document_property(name, std::move(options));
+		instance->DefineOwnProperty(isolate_->GetCurrentContext(), v8pp::to_v8(isolate_, name),
+			value, readonly ? v8::ReadOnly : v8::None).Check();
 		return *this;
 	}
 
@@ -244,8 +287,28 @@ public:
 		v8::AccessorNameGetterCallback getter = property_type::template get<Traits>;
 		v8::AccessorNameSetterCallback setter = property_type::is_readonly ? nullptr : property_type::template set<Traits>;
 		v8::Local<v8::Value> data = detail::external_data::set(isolate_, property_type(std::move(get), std::move(set)));
-		obj_->SetNativeDataProperty(v8_name, getter, setter, data, v8::PropertyAttribute::DontDelete);
+		obj_->SetNativeDataProperty(v8_name, getter, setter, data,
+			v8::PropertyAttribute(v8::DontDelete | (property_type::is_readonly ? v8::ReadOnly : 0)));
 		return *this;
+	}
+
+	/// Set a read-only property and record its metadata
+	template<typename GetFunction>
+	module& property(char const* name, GetFunction&& get, metadata::property_options options)
+	{
+		options.readonly = true;
+		document_property(name, std::move(options));
+		return property(name, std::forward<GetFunction>(get));
+	}
+
+	/// Set a read/write property and record its metadata
+	template<typename GetFunction, typename SetFunction>
+	module& property(char const* name, GetFunction&& get, SetFunction&& set,
+		metadata::property_options options)
+	{
+		options.readonly = false;
+		document_property(name, std::move(options));
+		return property(name, std::forward<GetFunction>(get), std::forward<SetFunction>(set));
 	}
 
 	/// Set another module as a read-only property
@@ -267,6 +330,15 @@ public:
 		obj_->Set(v8pp::to_v8(isolate_, name), to_v8(isolate_, value),
 			v8::PropertyAttribute(v8::ReadOnly | v8::DontDelete));
 		return *this;
+	}
+
+	/// Set a documented read-only value
+	template<typename Value>
+	module& const_(std::string_view name, Value const& value, metadata::property_options options)
+	{
+		options.readonly = true;
+		document_property(name, std::move(options));
+		return const_(name, value);
 	}
 
 	/// Create a new module instance in V8

@@ -164,6 +164,13 @@ struct symbol
 		return record({ std::string(property_name), std::move(description),
 			std::move(property_type), readonly, static_ });
 	}
+
+	property& add_property(std::string_view property_name, std::string type_name,
+		std::string description = {}, bool readonly = false, bool static_ = false)
+	{
+		return add_property(property_name, type{ std::move(type_name), {}, false },
+			std::move(description), readonly, static_);
+	}
 };
 
 class registry

@@ -124,7 +124,11 @@ struct Z
 
 struct MetadataClass
 {
+	int value = 1;
+
 	int double_value(int value) { return value * 2; }
+	int get_value() const { return value; }
+	void set_value(int new_value) { value = new_value; }
 };
 
 struct UndocumentedMetadataClass
@@ -143,6 +147,23 @@ void metadata_static_function(v8::FunctionCallbackInfo<v8::Value> const& args)
 void metadata_prototype_function(v8::FunctionCallbackInfo<v8::Value> const& args)
 {
 	args.GetReturnValue().Set(20);
+}
+
+template<typename Traits>
+void metadata_value_get(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	auto self = v8pp::class_<MetadataClass, Traits>::unwrap_object(args.GetIsolate(), args.This());
+	if (self) args.GetReturnValue().Set(self->value);
+}
+
+template<typename Traits>
+void metadata_value_set(v8::FunctionCallbackInfo<v8::Value> const& args)
+{
+	auto self = v8pp::class_<MetadataClass, Traits>::unwrap_object(args.GetIsolate(), args.This());
+	if (self && args.Length())
+	{
+		self->value = args[0]->Int32Value(args.GetIsolate()->GetCurrentContext()).FromJust();
+	}
 }
 
 template<typename Traits>
@@ -190,9 +211,25 @@ void test_class_()
 	metadata_class
 		.template ctor<>()
 		.function("doubleValue", &MetadataClass::double_value, metadata_function)
-		.document_property("value", { "Current value", "number", false, false })
+		.var("value", &MetadataClass::value, v8pp::metadata::property_docs("number", "Member value"))
+		.property("typedValue", &MetadataClass::get_value, &MetadataClass::set_value,
+			v8pp::metadata::property_docs("number", "Typed value"))
+		.property("readonlyTypedValue", &MetadataClass::get_value,
+			v8pp::metadata::property_docs("number", "Read-only typed value"))
+		.const_("constantValue", 30, v8pp::metadata::property_docs("number", "Constant value"))
+		.static_("staticProperty", 40,
+			{ "Static property", "number", true, true })
+		.static_("staticArray", std::vector<int>{ 1, 2 },
+			{ "Static array", "number[]", true, true })
 		.document_base("BaseMetadataClass")
 		.document_base("BaseMetadataClass");
+	auto raw_getter = v8::FunctionTemplate::New(isolate, &metadata_value_get<Traits>);
+	auto raw_setter = v8::FunctionTemplate::New(isolate, &metadata_value_set<Traits>);
+	metadata_class
+		.accessor_property("rawValue", raw_getter, raw_setter,
+			v8pp::metadata::property_docs("number", "Raw accessor value"))
+		.accessor_property("readonlyRawValue", raw_getter, {},
+			v8pp::metadata::property_docs("number", "Read-only raw accessor value"));
 	auto described_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
 		"describedValue", { .description = "Descriptor binding" });
 	metadata_class.function(described_function, &MetadataClass::double_value);
@@ -213,13 +250,15 @@ void test_class_()
 		[isolate, &metadata]()
 			{ v8pp::class_<MetadataClass, Traits>::extend(isolate,
 				metadata.global_object("InvalidMetadataExtension")); });
-	auto metadata_constructor = metadata_class.js_function_template()
-		->GetFunction(isolate->GetCurrentContext()).ToLocalChecked();
 	metadata_class
-		.static_function(metadata_constructor, "staticValue", &metadata_static_function,
-			v8pp::metadata::docs("number", {}, "Returns a static value"))
+		.static_function("templateStaticValue", &metadata_static_function,
+			v8pp::metadata::docs("number", {}, "Returns a template static value"))
 		.prototype_function("prototypeValue", &metadata_prototype_function,
 			v8pp::metadata::docs("number", {}, "Returns a prototype value"));
+	auto metadata_constructor = metadata_class.js_function_template()
+		->GetFunction(isolate->GetCurrentContext()).ToLocalChecked();
+	metadata_class.static_function(metadata_constructor, "staticValue", &metadata_static_function,
+		v8pp::metadata::docs("number", {}, "Returns a static value"));
 	metadata_class.publish(isolate->GetCurrentContext()->Global());
 	metadata_class.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
 	metadata_extension.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
@@ -231,23 +270,49 @@ void test_class_()
 		std::string("Descriptor binding"));
 	check_eq("class extension function metadata", metadata_class_api.functions[2].description,
 		std::string("Doubles a value from an extension"));
-	check_eq("class static function metadata", metadata_class_api.functions[3].static_, true);
+	check_eq("class template static function metadata", metadata_class_api.functions[3].static_, true);
 	check_eq("class prototype function metadata", metadata_class_api.functions[4].static_, false);
+	check_eq("class static function metadata", metadata_class_api.functions[5].static_, true);
 	check_eq("class property metadata", metadata_class_api.properties[0].value_type.name,
 		std::string("number"));
-	check_eq("class extension property metadata", metadata_class_api.properties[1].name,
+	check_eq("class writable property metadata", metadata_class_api.properties[1].readonly, false);
+	check_eq("class readonly property metadata", metadata_class_api.properties[2].readonly, true);
+	check_eq("class constant metadata", metadata_class_api.properties[3].readonly, true);
+	check_eq("class static property metadata", metadata_class_api.properties[4].static_, true);
+	check_eq("class static object metadata", metadata_class_api.properties[5].static_, true);
+	check_eq("class raw accessor metadata", metadata_class_api.properties[6].readonly, false);
+	check_eq("class readonly raw accessor metadata", metadata_class_api.properties[7].readonly, true);
+	check_eq("class extension property metadata", metadata_class_api.properties[8].name,
 		std::string("extendedProperty"));
 	check_eq("class base deduplication", metadata_class_api.bases.size(), std::size_t{ 1 });
 	check_eq("class published function", run_script<int>(context,
 		"new MetadataClass().doubleValue(5)"), 10);
 	check_eq("class published descriptor function", run_script<int>(context,
 		"new MetadataClass().describedValue(6)"), 12);
+	check_eq("class published template static function", run_script<int>(context,
+		"MetadataClass.templateStaticValue()"), 10);
 	check_eq("class published static function", run_script<int>(context,
 		"MetadataClass.staticValue()"), 10);
 	check_eq("class published prototype function", run_script<int>(context,
 		"new MetadataClass().prototypeValue()"), 20);
 	check_eq("class published extension function", run_script<int>(context,
 		"new MetadataClass().extendedValue(7)"), 14);
+	check_eq("class documented member variable", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.value = 2; metadataValue.value"), 2);
+	check_eq("class documented typed property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.typedValue = 3; metadataValue.typedValue"), 3);
+	check_eq("class documented readonly property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.readonlyTypedValue = 3; metadataValue.readonlyTypedValue"), 1);
+	check_eq("class documented constant", run_script<int>(context,
+		"new MetadataClass().constantValue"), 30);
+	check_eq("class documented static property", run_script<int>(context,
+		"MetadataClass.staticProperty"), 40);
+	check_eq("class documented static object", run_script<int>(context,
+		"MetadataClass.staticArray[0] + MetadataClass.staticArray[1]"), 3);
+	check_eq("class raw accessor property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.rawValue = 4; metadataValue.rawValue"), 4);
+	check_eq("class readonly raw accessor property", run_script<int>(context,
+		"metadataValue = new MetadataClass(); metadataValue.readonlyRawValue = 4; metadataValue.readonlyRawValue"), 1);
 
 	using x_prop_get = int (X::*)() const;
 	using x_prop_set = void (X::*)(int);

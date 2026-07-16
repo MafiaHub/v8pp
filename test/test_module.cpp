@@ -82,6 +82,17 @@ void test_module()
 	auto& descriptor = documented_api.add_function<int(int)>("descriptorFun");
 	documented.function(descriptor, &fun);
 	documented.document_property("status", { "Module status", "string", true, false });
+	documented
+		.value("readonlyValue", v8pp::to_v8(context.isolate(), 10),
+			{ "Read-only value", "number", true, false })
+		.value("writableValue", v8pp::to_v8(context.isolate(), 11),
+			{ "Writable value", "number", false, false })
+		.const_("constantValue", 12,
+			v8pp::metadata::property_docs("number", "Constant value"))
+		.property("documentedReadonlyProperty", &get_x,
+			v8pp::metadata::property_docs("number", "Documented read-only property"))
+		.property("documentedWritableProperty", &get_x, &set_x,
+			v8pp::metadata::property_docs("number", "Documented writable property"));
 	module.document_property("ignored", { "Not recorded", "string", false, false });
 
 	context.module("module", module);
@@ -89,9 +100,11 @@ void test_module()
 	documented.publish(global);
 
 	v8pp::module supplied_instance(context.isolate(), metadata, "suppliedInstance");
-	auto instance = v8::Object::New(context.isolate());
-	instance->Set(context.isolate()->GetCurrentContext(), v8pp::to_v8(context.isolate(), "marker"),
-		v8pp::to_v8(context.isolate(), 7)).Check();
+	supplied_instance.function("fun", &fun,
+		v8pp::metadata::docs("number", { v8pp::metadata::param("value", "number") }));
+	auto instance = supplied_instance.new_instance();
+	supplied_instance.value(instance, "marker", v8pp::to_v8(context.isolate(), 7),
+		{ "Materialized object value", "number", true, false });
 	supplied_instance.publish(global, instance);
 
 	auto raw = v8::Object::New(context.isolate());
@@ -134,8 +147,25 @@ void test_module()
 		run_script<int>(context, "documented.fun(100)"), 101);
 	check_eq("documented.descriptorFun",
 		run_script<int>(context, "documented.descriptorFun(100)"), 101);
+	check_eq("documented readonly value", run_script<int>(context,
+		"documented.readonlyValue = 1; documented.readonlyValue"), 10);
+	check_eq("documented writable value", run_script<int>(context,
+		"documented.writableValue = 1; documented.writableValue"), 1);
+	check_eq("documented constant value", run_script<int>(context,
+		"documented.constantValue = 1; documented.constantValue"), 12);
+	check_eq("documented readonly property", run_script<int>(context,
+		"documented.documentedReadonlyProperty"), 2);
+	check_eq("documented writable property", run_script<int>(context,
+		"documented.documentedWritableProperty = 10; documented.documentedWritableProperty"), 10);
+	x = 1;
 	check_eq("supplied module instance",
 		run_script<int>(context, "suppliedInstance.marker"), 7);
+	check_eq("supplied module instance function",
+		run_script<int>(context, "suppliedInstance.fun(7)"), 8);
+	check_eq("supplied module readonly instance value", run_script<int>(context,
+		"suppliedInstance.marker = 8; suppliedInstance.marker"), 7);
+	check_eq("supplied module instance metadata",
+		metadata.global_object("suppliedInstance").properties[0].readonly, true);
 	check_eq("raw object function",
 		run_script<int>(context, "raw.fun(100)"), 101);
 	check_eq("global value", run_script<int>(context, "answer"), 42);
@@ -155,6 +185,11 @@ void test_module()
 		std::string("value"));
 	check_eq("documented property", documented_api.properties[0].name, std::string("status"));
 	check_eq("documented property readonly", documented_api.properties[0].readonly, true);
+	check_eq("documented value readonly", documented_api.properties[1].readonly, true);
+	check_eq("documented value writable", documented_api.properties[2].readonly, false);
+	check_eq("documented constant readonly", documented_api.properties[3].readonly, true);
+	check_eq("documented accessor readonly", documented_api.properties[4].readonly, true);
+	check_eq("documented accessor writable", documented_api.properties[5].readonly, false);
 	check_eq("raw function metadata", raw_api.functions[0].description,
 		std::string("Increment a raw object value"));
 	check_eq("global metadata count", metadata.variables().size(), std::size_t{ 3 });

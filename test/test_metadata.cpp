@@ -93,6 +93,9 @@ void test_metadata()
 	updated_camera.add_property("active", v8pp::metadata::type_of<bool>(), "Static property", true, true);
 	check_eq("metadata static property overload", updated_camera.properties.size(), std::size_t{ 2 });
 	check_eq("metadata static property marker", updated_camera.properties[1].static_, true);
+	updated_camera.add_property("zoom", "number", "Camera zoom");
+	check_eq("metadata string property shorthand", updated_camera.properties[2].value_type.name,
+		std::string("number"));
 
 	registry.variable_("MainCamera", { "Camera", {}, false }, "Updated variable", false);
 	check_eq("metadata variable deduplication", registry.variables().size(), std::size_t{ 1 });

@@ -341,6 +341,19 @@ public:
 	}
 
 	template<typename Function>
+	class_& static_function(std::string_view name, Function callback,
+		metadata::function_options const& options = {})
+	{
+		using function_type = std::decay_t<Function>;
+		static_assert(detail::is_callable<function_type>::value, "Function must be callable");
+		if (metadata_) metadata_->record(metadata::function_of<function_type>(name, options, true));
+		js_function_template()->Set(v8pp::to_v8(isolate(), name),
+			v8::FunctionTemplate::New(isolate(), callback));
+		return *this;
+	}
+
+	/// Attach a static callback to an already materialized constructor
+	template<typename Function>
 	class_& static_function(v8::Local<v8::Function> constructor, std::string_view name,
 		Function callback, metadata::function_options const& options = {})
 	{
@@ -375,6 +388,21 @@ public:
 		return *this;
 	}
 
+	/// Install V8 function-template accessors and record their property metadata
+	class_& accessor_property(std::string_view name,
+		v8::Local<v8::FunctionTemplate> getter,
+		v8::Local<v8::FunctionTemplate> setter,
+		metadata::property_options options)
+	{
+		bool const readonly = setter.IsEmpty();
+		options.readonly = readonly;
+		document_property(name, std::move(options));
+		class_function_template()->PrototypeTemplate()->SetAccessorProperty(
+			v8pp::to_v8(isolate(), name).template As<v8::Name>(), getter, setter,
+			readonly ? v8::ReadOnly : v8::None);
+		return *this;
+	}
+
 	class_& document_base(std::string name)
 	{
 		if (metadata_ && std::find(metadata_->bases.begin(), metadata_->bases.end(), name) == metadata_->bases.end())
@@ -388,8 +416,9 @@ public:
 	{
 		if (!metadata_) throw std::logic_error("v8pp::class_::publish requires metadata");
 		auto context = isolate()->GetCurrentContext();
-		global->Set(context, v8pp::to_v8(isolate(), metadata_->name),
-			js_function_template()->GetFunction(context).ToLocalChecked()).Check();
+		auto constructor = js_function_template()->GetFunction(context).ToLocalChecked();
+		apply_documented_static_values(constructor);
+		global->Set(context, v8pp::to_v8(isolate(), metadata_->name), constructor).Check();
 		return *this;
 	}
 
@@ -397,6 +426,7 @@ public:
 	{
 		if (!metadata_) throw std::logic_error("v8pp::class_::publish requires metadata");
 		auto context = isolate()->GetCurrentContext();
+		apply_documented_static_values(constructor);
 		global->Set(context, v8pp::to_v8(isolate(), metadata_->name), constructor).Check();
 		return *this;
 	}
@@ -420,6 +450,15 @@ public:
 		v8::Local<v8::Value> data = detail::external_data::set(isolate(), std::forward<attribute_type>(attr));
 		class_info_.class_function_template()->PrototypeTemplate()->SetNativeDataProperty(v8_name, getter, setter, data, v8::PropertyAttribute::DontDelete);
 		return *this;
+	}
+
+	/// Set a documented class member variable
+	template<typename Attribute>
+	class_& var(std::string_view name, Attribute attribute, metadata::property_options options)
+	{
+		options.readonly = false;
+		document_property(name, std::move(options));
+		return var(name, attribute);
 	}
 
 	/// Set read/write class property with getter and setter
@@ -448,8 +487,28 @@ public:
 		v8::AccessorNameSetterCallback setter = property_type::is_readonly ? nullptr : property_type::template set<Traits>;
 		v8::Local<v8::String> v8_name = v8pp::to_v8(isolate(), name);
 		v8::Local<v8::Value> data = detail::external_data::set(isolate(), property_type(std::move(get), std::move(set)));
-		class_info_.class_function_template()->PrototypeTemplate()->SetNativeDataProperty(v8_name, getter, setter, data, v8::PropertyAttribute::DontDelete);
+		class_info_.class_function_template()->PrototypeTemplate()->SetNativeDataProperty(v8_name, getter, setter, data,
+			v8::PropertyAttribute(v8::DontDelete | (property_type::is_readonly ? v8::ReadOnly : 0)));
 		return *this;
+	}
+
+	/// Set a documented read-only class property
+	template<typename GetFunction>
+	class_& property(std::string_view name, GetFunction&& get, metadata::property_options options)
+	{
+		options.readonly = true;
+		document_property(name, std::move(options));
+		return property(name, std::forward<GetFunction>(get));
+	}
+
+	/// Set a documented read/write class property
+	template<typename GetFunction, typename SetFunction>
+	class_& property(std::string_view name, GetFunction&& get, SetFunction&& set,
+		metadata::property_options options)
+	{
+		options.readonly = false;
+		document_property(name, std::move(options));
+		return property(name, std::forward<GetFunction>(get), std::forward<SetFunction>(set));
 	}
 
 	/// Set value as a read-only constant
@@ -463,13 +522,39 @@ public:
 		return *this;
 	}
 
+	/// Set a documented read-only prototype value
+	template<typename Value>
+	class_& const_(std::string_view name, Value const& value, metadata::property_options options)
+	{
+		options.readonly = true;
+		options.static_ = false;
+		document_property(name, std::move(options));
+		return const_(name, value);
+	}
+
 	/// Set value as a class static property
 	template<typename Value>
 	class_& static_(std::string_view const& name, Value const& value, bool readonly = false)
 	{
 		v8::HandleScope scope(isolate());
 
-		class_info_.js_function_template()->GetFunction(isolate()->GetCurrentContext()).ToLocalChecked()->DefineOwnProperty(isolate()->GetCurrentContext(), v8pp::to_v8(isolate(), name), to_v8(isolate(), value), v8::PropertyAttribute(v8::DontDelete | (readonly ? v8::ReadOnly : 0))).FromJust();
+		class_info_.js_function_template()->GetFunction(isolate()->GetCurrentContext()).ToLocalChecked()
+			->DefineOwnProperty(isolate()->GetCurrentContext(), v8pp::to_v8(isolate(), name),
+				to_v8(isolate(), value),
+				v8::PropertyAttribute(v8::DontDelete | (readonly ? v8::ReadOnly : 0))).FromJust();
+		return *this;
+	}
+
+	/// Set a documented static value
+	template<typename Value>
+	class_& static_(std::string_view const& name, Value const& value,
+		metadata::property_options options)
+	{
+		bool const readonly = options.readonly;
+		options.static_ = true;
+		document_property(name, std::move(options));
+		documented_static_values_.push_back({ std::string(name),
+			v8::Global<v8::Value>(isolate(), to_v8(isolate(), value)), readonly });
 		return *this;
 	}
 
@@ -638,7 +723,26 @@ private:
 		}
 	}
 
+	struct documented_static_value
+	{
+		std::string name;
+		v8::Global<v8::Value> value;
+		bool readonly;
+	};
+
+	void apply_documented_static_values(v8::Local<v8::Function> constructor)
+	{
+		auto context = isolate()->GetCurrentContext();
+		for (auto const& property : documented_static_values_)
+		{
+			constructor->DefineOwnProperty(context, v8pp::to_v8(isolate(), property.name),
+				property.value.Get(isolate()),
+				v8::PropertyAttribute(v8::DontDelete | (property.readonly ? v8::ReadOnly : 0))).FromJust();
+		}
+	}
+
 	metadata::symbol* metadata_;
+	std::vector<documented_static_value> documented_static_values_;
 };
 
 /// Interface to access C++ classes bound to V8
