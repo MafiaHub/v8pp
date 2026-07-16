@@ -28,18 +28,26 @@ void set_global(v8::Isolate* isolate, v8::Local<v8::Object> global,
 	metadata::registry& registry, std::string name, v8::Local<Data> value,
 	metadata::variable_options options)
 {
+	bool const readonly = options.readonly;
 	registry.variable_(name, { std::move(options.type), {}, false },
-		std::move(options.description), options.readonly);
-	global->Set(isolate->GetCurrentContext(), v8pp::to_v8(isolate, name), value).Check();
+		std::move(options.description), readonly);
+	auto const attributes = readonly ? v8::ReadOnly : v8::None;
+	global->DefineOwnProperty(isolate->GetCurrentContext(), v8pp::to_v8(isolate, name),
+		value, attributes).Check();
 }
 
 inline void set_global_accessor(v8::Isolate* isolate, v8::Local<v8::Object> global,
 	metadata::registry& registry, std::string name, v8::Local<v8::Function> getter,
 	metadata::variable_options options)
 {
+	if (!options.readonly)
+	{
+		throw std::invalid_argument("getter-only global accessor must be readonly");
+	}
 	registry.variable_(name, { std::move(options.type), {}, false },
-		std::move(options.description), options.readonly);
-	global->SetAccessorProperty(v8pp::to_v8(isolate, name).As<v8::Name>(), getter);
+		std::move(options.description), true);
+	global->SetAccessorProperty(v8pp::to_v8(isolate, name).As<v8::Name>(), getter,
+		v8::Local<v8::Function>{}, v8::ReadOnly);
 }
 
 inline void publish(v8::Isolate* isolate, v8::Local<v8::Object> global,

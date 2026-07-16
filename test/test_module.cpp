@@ -106,9 +106,15 @@ void test_module()
 
 	v8pp::set_global(context.isolate(), global, metadata, "answer", v8pp::to_v8(context.isolate(), 42),
 		{ "number", "The answer", true });
+	v8pp::set_global(context.isolate(), global, metadata, "mutableAnswer", v8pp::to_v8(context.isolate(), 1),
+		{ "number", "A mutable answer", false });
 	auto getter = v8::Function::New(context.isolate()->GetCurrentContext(), &get_answer).ToLocalChecked();
 	v8pp::set_global_accessor(context.isolate(), global, metadata, "dynamicAnswer", getter,
 		{ "number", "A computed answer", true });
+	check_ex<std::invalid_argument>("writable getter-only global rejected",
+		[&context, &metadata, global, getter]()
+			{ v8pp::set_global_accessor(context.isolate(), global, metadata,
+				"invalidAccessor", getter, { "number", "Invalid accessor", false }); });
 
 	check_eq("module.consts.bool",
 		run_script<bool>(context, "module.consts.bool"), true);
@@ -133,7 +139,16 @@ void test_module()
 	check_eq("raw object function",
 		run_script<int>(context, "raw.fun(100)"), 101);
 	check_eq("global value", run_script<int>(context, "answer"), 42);
+	check_eq("readonly global assignment", run_script<int>(context, "answer = 7; answer"), 42);
+	check_ex<std::runtime_error>("strict readonly global assignment", [&context]()
+		{ run_script<int>(context, "'use strict'; answer = 7; answer"); });
+	check_eq("writable global assignment", run_script<int>(context,
+		"mutableAnswer = 7; mutableAnswer"), 7);
 	check_eq("global accessor", run_script<int>(context, "dynamicAnswer"), 42);
+	check_eq("readonly accessor assignment", run_script<int>(context,
+		"dynamicAnswer = 7; dynamicAnswer"), 42);
+	check_ex<std::runtime_error>("strict readonly accessor assignment", [&context]()
+		{ run_script<int>(context, "'use strict'; dynamicAnswer = 7; dynamicAnswer"); });
 	check_eq("documented metadata", documented_api.functions[0].description,
 		std::string("Increment a number"));
 	check_eq("documented parameter", documented_api.functions[0].call_signature.parameters[0].name,
@@ -142,8 +157,11 @@ void test_module()
 	check_eq("documented property readonly", documented_api.properties[0].readonly, true);
 	check_eq("raw function metadata", raw_api.functions[0].description,
 		std::string("Increment a raw object value"));
-	check_eq("global metadata count", metadata.variables().size(), std::size_t{ 2 });
+	check_eq("global metadata count", metadata.variables().size(), std::size_t{ 3 });
 	check_eq("global metadata type", metadata.variables()[0].value_type.name, std::string("number"));
+	check_eq("readonly global metadata", metadata.variables()[0].readonly, true);
+	check_eq("writable global metadata", metadata.variables()[1].readonly, false);
+	check_eq("readonly accessor metadata", metadata.variables()[2].readonly, true);
 
 	check_eq("module.rprop",
 		run_script<int>(context, "module.rprop"), 2);

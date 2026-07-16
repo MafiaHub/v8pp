@@ -60,7 +60,7 @@ Some of them could be:
 v8pp supports V8 versions after 6.3 with `v8::Isolate` usage in API. There are 2 targets for binding:
 
   * `v8pp::module`, a wrapper class around `v8::ObjectTemplate`
-* `v8pp::class_`, a template class wrapper around `v8::FunctionTemplate`
+  * `v8pp::class_`, a template class wrapper around `v8::FunctionTemplate`
 
 ### Binding metadata
 

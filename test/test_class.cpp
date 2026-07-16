@@ -196,6 +196,23 @@ void test_class_()
 	auto described_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
 		"describedValue", { .description = "Descriptor binding" });
 	metadata_class.function(described_function, &MetadataClass::double_value);
+	auto invalid_static_function = v8pp::metadata::function_of<decltype(&MetadataClass::double_value)>(
+		"invalidStaticValue", {}, true);
+	check_ex<std::invalid_argument>("member function rejects static metadata",
+		[&metadata_class, &invalid_static_function]()
+			{ metadata_class.function(invalid_static_function, &MetadataClass::double_value); });
+	auto& extension_api = metadata.constructor("MetadataClass");
+	auto metadata_extension = v8pp::class_<MetadataClass, Traits>::extend(isolate, extension_api);
+	check_eq("class extension metadata symbol", metadata_extension.metadata_symbol(), &extension_api);
+	metadata_extension
+		.function("extendedValue", &MetadataClass::double_value,
+			v8pp::metadata::docs("number", { v8pp::metadata::param("value", "number") },
+				"Doubles a value from an extension"))
+		.document_property("extendedProperty", { "Extended property", "number", true, false });
+	check_ex<std::invalid_argument>("class extension rejects global object metadata",
+		[isolate, &metadata]()
+			{ v8pp::class_<MetadataClass, Traits>::extend(isolate,
+				metadata.global_object("InvalidMetadataExtension")); });
 	auto metadata_constructor = metadata_class.js_function_template()
 		->GetFunction(isolate->GetCurrentContext()).ToLocalChecked();
 	metadata_class
@@ -205,16 +222,21 @@ void test_class_()
 			v8pp::metadata::docs("number", {}, "Returns a prototype value"));
 	metadata_class.publish(isolate->GetCurrentContext()->Global());
 	metadata_class.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
+	metadata_extension.publish(isolate->GetCurrentContext()->Global(), metadata_constructor);
 	check_eq("class metadata description", metadata_class_api.functions[0].description,
 		std::string("Doubles a value"));
 	check_eq("class metadata parameter", metadata_class_api.functions[0].call_signature.parameters[0].name,
 		std::string("value"));
 	check_eq("class descriptor metadata", metadata_class_api.functions[1].description,
 		std::string("Descriptor binding"));
-	check_eq("class static function metadata", metadata_class_api.functions[2].static_, true);
-	check_eq("class prototype function metadata", metadata_class_api.functions[3].static_, false);
+	check_eq("class extension function metadata", metadata_class_api.functions[2].description,
+		std::string("Doubles a value from an extension"));
+	check_eq("class static function metadata", metadata_class_api.functions[3].static_, true);
+	check_eq("class prototype function metadata", metadata_class_api.functions[4].static_, false);
 	check_eq("class property metadata", metadata_class_api.properties[0].value_type.name,
 		std::string("number"));
+	check_eq("class extension property metadata", metadata_class_api.properties[1].name,
+		std::string("extendedProperty"));
 	check_eq("class base deduplication", metadata_class_api.bases.size(), std::size_t{ 1 });
 	check_eq("class published function", run_script<int>(context,
 		"new MetadataClass().doubleValue(5)"), 10);
@@ -224,6 +246,8 @@ void test_class_()
 		"MetadataClass.staticValue()"), 10);
 	check_eq("class published prototype function", run_script<int>(context,
 		"new MetadataClass().prototypeValue()"), 20);
+	check_eq("class published extension function", run_script<int>(context,
+		"new MetadataClass().extendedValue(7)"), 14);
 
 	using x_prop_get = int (X::*)() const;
 	using x_prop_set = void (X::*)(int);

@@ -225,10 +225,15 @@ private:
 		return destroy;
 	}
 
-	explicit class_(v8::Isolate* isolate, detail::type_info const& existing)
+	explicit class_(v8::Isolate* isolate, detail::type_info const& existing,
+		metadata::symbol* metadata_symbol)
 		: class_info_(detail::classes::find<Traits>(isolate, existing))
-		, metadata_(nullptr)
+		, metadata_(metadata_symbol)
 	{
+		if (metadata_symbol && metadata_symbol->kind != metadata::symbol_kind::constructor)
+		{
+			throw std::invalid_argument("v8pp::class_ metadata must describe a constructor");
+		}
 	}
 
 public:
@@ -265,7 +270,13 @@ public:
 	/// Find existing class_ to extend bindings
 	static class_ extend(v8::Isolate* isolate)
 	{
-		return class_(isolate, detail::type_id<T>());
+		return class_(isolate, detail::type_id<T>(), nullptr);
+	}
+
+	/// Find an existing class_ and record additional bindings in metadata
+	static class_ extend(v8::Isolate* isolate, metadata::symbol& metadata_symbol)
+	{
+		return class_(isolate, detail::type_id<T>(), &metadata_symbol);
 	}
 
 	/// Set class constructor signature
@@ -320,6 +331,11 @@ public:
 	class_& function(metadata::function const& binding, Function&& func,
 		v8::PropertyAttribute attr = v8::None)
 	{
+		using function_type = std::decay_t<Function>;
+		if (binding.static_ && std::is_member_function_pointer_v<function_type>)
+		{
+			throw std::invalid_argument("member function metadata cannot be static");
+		}
 		if (metadata_) metadata_->record(binding);
 		return bind_function(binding.name, std::forward<Function>(func), attr, nullptr, false);
 	}
