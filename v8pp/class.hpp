@@ -340,39 +340,30 @@ public:
 		return bind_function(binding.name, std::forward<Function>(func), attr, nullptr, false);
 	}
 
-	template<typename Function>
-	class_& static_function(std::string_view name, Function callback,
+	class_& static_function(std::string_view name, v8::FunctionCallback callback,
 		metadata::function_options const& options = {})
 	{
-		using function_type = std::decay_t<Function>;
-		static_assert(detail::is_callable<function_type>::value, "Function must be callable");
-		if (metadata_) metadata_->record(metadata::function_of<function_type>(name, options, true));
+		if (metadata_) metadata_->record(metadata::function_of<v8::FunctionCallback>(name, options, true));
 		js_function_template()->Set(v8pp::to_v8(isolate(), name),
 			v8::FunctionTemplate::New(isolate(), callback));
 		return *this;
 	}
 
 	/// Attach a static callback to an already materialized constructor
-	template<typename Function>
 	class_& static_function(v8::Local<v8::Function> constructor, std::string_view name,
-		Function callback, metadata::function_options const& options = {})
+		v8::FunctionCallback callback, metadata::function_options const& options = {})
 	{
-		using function_type = std::decay_t<Function>;
-		static_assert(detail::is_callable<function_type>::value, "Function must be callable");
-		if (metadata_) metadata_->record(metadata::function_of<function_type>(name, options, true));
+		if (metadata_) metadata_->record(metadata::function_of<v8::FunctionCallback>(name, options, true));
 		auto context = isolate()->GetCurrentContext();
 		auto function = v8::Function::New(context, callback).ToLocalChecked();
 		constructor->Set(context, v8pp::to_v8(isolate(), name), function).Check();
 		return *this;
 	}
 
-	template<typename Function>
-	class_& prototype_function(std::string_view name, Function callback,
+	class_& prototype_function(std::string_view name, v8::FunctionCallback callback,
 		metadata::function_options const& options = {})
 	{
-		using function_type = std::decay_t<Function>;
-		static_assert(detail::is_callable<function_type>::value, "Function must be callable");
-		if (metadata_) metadata_->record(metadata::function_of<function_type>(name, options, false));
+		if (metadata_) metadata_->record(metadata::function_of<v8::FunctionCallback>(name, options, false));
 		class_function_template()->PrototypeTemplate()->Set(v8pp::to_v8(isolate(), name),
 			v8::FunctionTemplate::New(isolate(), callback));
 		return *this;

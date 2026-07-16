@@ -80,6 +80,32 @@ camera.publish(global);
 
 Ordinary typed functions can still infer their C++ signature. `metadata::docs` provides the authoritative JavaScript signature for raw V8 callbacks and for APIs whose JavaScript types differ from their native representation. `export_catalog_from_environment` can write the completed catalog when binding registration finishes.
 
+Class properties, raw V8 accessors, static callbacks, constants, and static values can use the same in-place declarations:
+
+```cpp
+v8pp::class_<Player> player(isolate, api, "Player", "A connected player");
+player.ctor<>()
+    .property("name", &Player::name, &Player::set_name,
+        v8pp::metadata::property_docs("string", "Display name"))
+    .accessor_property("position", position_getter, position_setter,
+        v8pp::metadata::property_docs("Vector3", "World position"))
+    .static_function("find", &find_player_callback,
+        v8pp::metadata::docs("Player | null", {
+            v8pp::metadata::param("id", "number"),
+        }));
+player.publish(global);
+```
+
+Concrete V8 objects and arrays cannot be stored in an `ObjectTemplate`. Materialize the module first, then bind those values through the instance-aware overload so runtime attributes and metadata still come from one declaration:
+
+```cpp
+v8pp::module world(isolate, api, "World");
+auto instance = world.new_instance();
+world.value(instance, "players", players_object,
+    { "Connected players", "EntityCollection<Player>", true, false });
+world.publish(global, instance);
+```
+
 Every symbol declares its runtime shape: `global_object` for a singleton value, `constructor` for an instantiable V8 class, or `data_type` for a structural type which has no runtime value. Registries can also describe properties and standalone global variables. These are renderer-neutral and emitted alongside functions in the schema-v2 JSON document:
 
 ```cpp
