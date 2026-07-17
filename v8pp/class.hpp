@@ -490,10 +490,29 @@ public:
 
 		v8::HandleScope scope(isolate());
 
-		v8::AccessorNameGetterCallback getter = property_type::template get<Traits>;
-		v8::AccessorNameSetterCallback setter = property_type::is_readonly ? nullptr : property_type::template set<Traits>;
 		v8::Local<v8::String> v8_name = v8pp::to_v8(isolate(), name);
 		v8::Local<v8::Value> data = detail::external_data::set(isolate(), property_type(std::move(get), std::move(set)));
+
+		if constexpr (!property_type::is_readonly)
+		{
+			// Read-write properties are registered as real JS accessors (SetAccessorProperty) so the
+			// setter fires when the property is assigned through an inherited prototype. A
+			// SetNativeDataProperty setter does not: V8 makes an own data property on the derived
+			// receiver instead of invoking the ancestor setter.
+			if constexpr (property_type::template accessor_compatible<Traits>())
+			{
+				v8::Local<v8::FunctionTemplate> getter_tmpl = v8::FunctionTemplate::New(
+					isolate(), property_type::template get_function<Traits>, data);
+				v8::Local<v8::FunctionTemplate> setter_tmpl = v8::FunctionTemplate::New(
+					isolate(), property_type::template set_function<Traits>, data);
+				class_info_.class_function_template()->PrototypeTemplate()->SetAccessorProperty(
+					v8_name.As<v8::Name>(), getter_tmpl, setter_tmpl, v8::DontDelete);
+				return *this;
+			}
+		}
+
+		v8::AccessorNameGetterCallback getter = property_type::template get<Traits>;
+		v8::AccessorNameSetterCallback setter = property_type::is_readonly ? nullptr : property_type::template set<Traits>;
 		class_info_.class_function_template()->PrototypeTemplate()->SetNativeDataProperty(v8_name, getter, setter, data,
 			v8::PropertyAttribute(v8::DontDelete | (property_type::is_readonly ? v8::ReadOnly : 0)));
 		return *this;

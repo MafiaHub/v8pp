@@ -187,6 +187,90 @@ struct property final
 	{
 		detail::property_set<property, Traits, Set, SetClass>(name, value, info);
 	}
+
+	// Whether this property can be exposed as a real JS accessor (SetAccessorProperty). Direct-form
+	// callbacks (that take a v8::PropertyCallbackInfo) cannot; they keep the SetNativeDataProperty path.
+	template<typename Traits>
+	static constexpr bool accessor_compatible()
+	{
+		constexpr size_t get_offset = std::same_as<GetClass, detail::none> ? 0 : (std::is_member_function_pointer_v<Get> ? 0 : 1);
+		constexpr size_t set_offset = std::same_as<SetClass, detail::none> ? 0 : (std::is_member_function_pointer_v<Set> ? 0 : 1);
+		return !detail::is_direct_getter<Get, get_offset> && !detail::is_direct_setter<Set, set_offset>;
+	}
+
+	// Function-callback getter/setter used with SetAccessorProperty. Unlike a SetNativeDataProperty
+	// setter, these fire when the property is assigned through an inherited prototype (a derived class);
+	// the native-data-property setter would instead make an own data property on the receiver.
+	template<typename Traits>
+	static void get_function(v8::FunctionCallbackInfo<v8::Value> const& info)
+	try
+	{
+		auto&& self = detail::external_data::get<property>(info.Data());
+		v8::Isolate* isolate = info.GetIsolate();
+		if constexpr (std::same_as<GetClass, detail::none>)
+		{
+			if constexpr (detail::is_isolate_getter<Get, 0>)
+				info.GetReturnValue().Set(to_v8(isolate, std::invoke(self.getter, isolate)));
+			else if constexpr (detail::is_getter<Get, 0>)
+				info.GetReturnValue().Set(to_v8(isolate, std::invoke(self.getter)));
+		}
+		else
+		{
+			auto obj = v8pp::class_<GetClass, Traits>::unwrap_object(isolate, info.This());
+			constexpr size_t offset = std::is_member_function_pointer_v<Get> ? 0 : 1;
+			if constexpr (detail::is_isolate_getter<Get, offset>)
+				info.GetReturnValue().Set(to_v8(isolate, std::invoke(self.getter, *obj, isolate)));
+			else if constexpr (detail::is_getter<Get, offset>)
+				info.GetReturnValue().Set(to_v8(isolate, std::invoke(self.getter, *obj)));
+		}
+	}
+	catch (std::exception const& ex)
+	{
+		info.GetIsolate()->ThrowException(v8::Exception::Error(to_v8(info.GetIsolate(), ex.what())));
+	}
+
+	template<typename Traits>
+	static void set_function(v8::FunctionCallbackInfo<v8::Value> const& info)
+	try
+	{
+		auto&& self = detail::external_data::get<property>(info.Data());
+		v8::Isolate* isolate = info.GetIsolate();
+		v8::Local<v8::Value> value = v8::Undefined(isolate);
+		if (info.Length() > 0)
+			value = info[0];
+		if constexpr (std::same_as<SetClass, detail::none>)
+		{
+			if constexpr (detail::is_isolate_setter<Set, 0>)
+			{
+				using value_type = typename detail::call_from_v8_traits<Set>::template arg_type<1>;
+				std::invoke(self.setter, isolate, v8pp::from_v8<value_type>(isolate, value));
+			}
+			else if constexpr (detail::is_setter<Set, 0>)
+			{
+				using value_type = typename detail::call_from_v8_traits<Set>::template arg_type<0>;
+				std::invoke(self.setter, v8pp::from_v8<value_type>(isolate, value));
+			}
+		}
+		else
+		{
+			auto obj = v8pp::class_<SetClass, Traits>::unwrap_object(isolate, info.This());
+			constexpr size_t offset = std::is_member_function_pointer_v<Set> ? 0 : 1;
+			if constexpr (detail::is_isolate_setter<Set, offset>)
+			{
+				using value_type = typename detail::call_from_v8_traits<Set>::template arg_type<1 + offset>;
+				std::invoke(self.setter, *obj, isolate, v8pp::from_v8<value_type>(isolate, value));
+			}
+			else if constexpr (detail::is_setter<Set, offset>)
+			{
+				using value_type = typename detail::call_from_v8_traits<Set>::template arg_type<0 + offset>;
+				std::invoke(self.setter, *obj, v8pp::from_v8<value_type>(isolate, value));
+			}
+		}
+	}
+	catch (std::exception const& ex)
+	{
+		info.GetIsolate()->ThrowException(v8::Exception::Error(to_v8(info.GetIsolate(), ex.what())));
+	}
 };
 
 /// Read-only property class specialization for get only method
