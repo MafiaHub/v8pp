@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -30,6 +31,16 @@ struct class_info
 	virtual ~class_info() = default; // make virtual to delete derived object_registry
 
 	std::string class_name() const;
+
+	// The name this class is registered under in a metadata::registry, empty for a class bound
+	// without metadata. class_name() is a diagnostic spelling of the C++ type; this is the name a
+	// script sees and a generated declaration has to extend, which is what lets inherit<U>() record
+	// a base instead of every binding repeating it by hand.
+	std::string const& documented_name() const { return documented_name_; }
+	void set_documented_name(std::string name) { documented_name_ = std::move(name); }
+
+private:
+	std::string documented_name_;
 };
 
 template<typename Traits>
@@ -234,6 +245,10 @@ private:
 		{
 			throw std::invalid_argument("v8pp::class_ metadata must describe a constructor");
 		}
+		if (metadata_symbol)
+		{
+			class_info_.set_documented_name(metadata_symbol->name);
+		}
 	}
 
 public:
@@ -253,6 +268,7 @@ public:
 		: class_(isolate, validate_metadata(metadata_symbol, std::move(destroy)))
 	{
 		metadata_ = &metadata_symbol;
+		class_info_.set_documented_name(metadata_symbol.name);
 	}
 
 	explicit class_(v8::Isolate* isolate, metadata::registry& registry,
@@ -317,6 +333,13 @@ public:
 			{ return pointer_type{ Traits::template static_pointer_cast<U>(
 				  Traits::template static_pointer_cast<T>(ptr)) }; });
 		class_info_.js_function_template()->Inherit(base.class_function_template());
+		// The prototype chain is the documentation: a base recorded by hand is a second source of
+		// truth for a fact this call already knows, and it goes stale the moment the base gains a
+		// member. A base bound without metadata has no documented name and records nothing.
+		if (!base.documented_name().empty())
+		{
+			document_base(base.documented_name());
+		}
 		return *this;
 	}
 
