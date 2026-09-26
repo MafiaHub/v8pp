@@ -120,6 +120,10 @@ try
 	else
 	{
 		auto obj = v8pp::class_<GetClass, Traits>::unwrap_object(info.GetIsolate(), info.This());
+		if (!obj)
+		{
+			throw std::runtime_error("property accessed on null instance");
+		}
 		property_get(property.getter, name, info, *obj);
 	}
 }
@@ -144,6 +148,10 @@ try
 	else
 	{
 		auto obj = v8pp::class_<SetClass, Traits>::unwrap_object(info.GetIsolate(), info.This());
+		if (!obj)
+		{
+			throw std::runtime_error("property accessed on null instance");
+		}
 		property_set(property.setter, name, value, info, *obj);
 	}
 }
@@ -217,6 +225,10 @@ struct property final
 		else
 		{
 			auto obj = v8pp::class_<GetClass, Traits>::unwrap_object(isolate, info.This());
+			if (!obj)
+			{
+				throw std::runtime_error("property accessed on null instance");
+			}
 			constexpr size_t offset = std::is_member_function_pointer_v<Get> ? 0 : 1;
 			if constexpr (detail::is_isolate_getter<Get, offset>)
 				info.GetReturnValue().Set(to_v8(isolate, std::invoke(self.getter, *obj, isolate)));
@@ -254,6 +266,10 @@ struct property final
 		else
 		{
 			auto obj = v8pp::class_<SetClass, Traits>::unwrap_object(isolate, info.This());
+			if (!obj)
+			{
+				throw std::runtime_error("property accessed on null instance");
+			}
 			constexpr size_t offset = std::is_member_function_pointer_v<Set> ? 0 : 1;
 			if constexpr (detail::is_isolate_setter<Set, offset>)
 			{
