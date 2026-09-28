@@ -146,6 +146,24 @@ void test_metadata()
 	check_eq("docs static marker", documented_function.static_, true);
 	updated_camera.record(documented_function);
 
+	auto variadic_documentation = v8pp::metadata::docs("void",
+		{ v8pp::metadata::param("level", "string"),
+			v8pp::metadata::rest_param("values", "unknown[]", "Values to write") });
+	auto variadic_function = v8pp::metadata::function_of<void (*)()>("log", variadic_documentation);
+	check_eq("rest parameter marker", variadic_function.call_signature.parameters[1].variadic, true);
+	check_eq("rest parameter type", variadic_function.call_signature.parameters[1].value_type.name,
+		std::string("unknown[]"));
+	check_eq("rest parameter never optional", variadic_function.call_signature.parameters[1].value_type.optional, false);
+	check_eq("fixed parameter not variadic", variadic_function.call_signature.parameters[0].variadic, false);
+	updated_camera.record(variadic_function);
+
+	registry.function_(v8pp::metadata::function_of<void (*)()>("setTimeout",
+		v8pp::metadata::docs("number", { v8pp::metadata::param("handler", "() => void") }, "Schedules a call")));
+	registry.function_(v8pp::metadata::function_of<void (*)()>("setTimeout",
+		v8pp::metadata::docs("number", { v8pp::metadata::param("handler", "() => void") }, "Updated schedule")));
+	check_eq("global function deduplication", registry.functions().size(), std::size_t{ 1 });
+	check_eq("global function replacement", registry.functions()[0].description, std::string("Updated schedule"));
+
 	auto property_documentation = v8pp::metadata::property_docs("Vector3", "World position");
 	check_eq("property docs type", property_documentation.type, std::string("Vector3"));
 	check_eq("property docs description", property_documentation.description, std::string("World position"));
@@ -175,6 +193,12 @@ void test_metadata()
 	check_eq("metadata json contains base", json.find("\"bases\":[\"BaseEntity\"]") != std::string::npos, true);
 	check_eq("metadata json contains static", json.find("\"static\":true") != std::string::npos, true);
 	check_eq("metadata json contains writable variable", json.find("\"readonly\":false") != std::string::npos, true);
+	check_eq("metadata json marks rest parameter",
+		json.find("\"name\":\"values\",\"description\":\"Values to write\",\"type\":{\"name\":\"unknown[]\",\"cppName\":\"\",\"optional\":false},\"variadic\":true}") != std::string::npos, true);
+	check_eq("metadata json leaves fixed parameters unmarked",
+		json.find("\"name\":\"level\",\"description\":\"\",\"type\":{\"name\":\"string\",\"cppName\":\"\",\"optional\":false}}") != std::string::npos, true);
+	check_eq("metadata json contains global functions",
+		json.find("\"functions\":[{\"name\":\"setTimeout\"") != std::string::npos, true);
 
 	std::vector<v8pp::metadata::symbol> vector_symbols{ updated_camera };
 	std::ostringstream vector_json;

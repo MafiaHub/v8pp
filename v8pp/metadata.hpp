@@ -41,6 +41,9 @@ struct parameter
 	std::string name;
 	type value_type;
 	std::string description;
+	// A rest parameter: it takes every remaining argument, and value_type names the array
+	// they arrive as ("unknown[]"), exactly as a TypeScript rest parameter is typed.
+	bool variadic = false;
 };
 
 struct signature
@@ -56,6 +59,7 @@ struct parameter_options
 	std::string description;
 	std::string type;
 	std::optional<bool> optional;
+	bool variadic = false;
 };
 
 struct function_options
@@ -208,8 +212,25 @@ public:
 		return variables_.back();
 	}
 
+	// A function installed directly on the global object, such as setTimeout. It has no
+	// owning symbol to be recorded on, so the registry keeps it beside the variables.
+	function& function_(function value)
+	{
+		for (auto& existing : functions_)
+		{
+			if (existing.name == value.name)
+			{
+				existing = std::move(value);
+				return existing;
+			}
+		}
+		functions_.push_back(std::move(value));
+		return functions_.back();
+	}
+
 	std::deque<symbol> const& symbols() const { return symbols_; }
 	std::deque<variable> const& variables() const { return variables_; }
+	std::deque<function> const& functions() const { return functions_; }
 
 private:
 	symbol& add(symbol_kind kind, std::string name, std::string description)
@@ -229,6 +250,7 @@ private:
 
 	std::deque<symbol> symbols_;
 	std::deque<variable> variables_;
+	std::deque<function> functions_;
 };
 
 inline registry& catalog(std::string_view name)
@@ -328,6 +350,7 @@ inline void apply_options(signature& result, function_options const& options)
 		if (!source.description.empty()) target.description = source.description;
 		if (!source.type.empty()) target.value_type.name = source.type;
 		if (source.optional) target.value_type.optional = *source.optional;
+		if (source.variadic) target.variadic = true;
 	}
 	if (!options.return_description.empty()) result.return_description = options.return_description;
 }
@@ -358,6 +381,14 @@ inline parameter_options param(std::string name, std::string type,
 	return { std::move(name), std::move(description), std::move(type), optional };
 }
 
+// A rest parameter. `type` is the array the remaining arguments arrive as, "unknown[]" for
+// console.log's values; it is never optional, because an empty rest is already a valid call.
+inline parameter_options rest_param(std::string name, std::string type,
+	std::string description = {})
+{
+	return { std::move(name), std::move(description), std::move(type), std::nullopt, true };
+}
+
 inline function_options docs(std::string return_type,
 	std::initializer_list<parameter_options> parameters = {},
 	std::string description = {}, std::string return_description = {},
@@ -376,7 +407,8 @@ inline function_options docs(std::string return_type,
 	for (auto const& parameter : parameters)
 	{
 		result.explicit_signature->parameters.push_back({ parameter.name,
-			{ parameter.type, {}, parameter.optional.value_or(false) }, parameter.description });
+			{ parameter.type, {}, parameter.optional.value_or(false) }, parameter.description,
+			parameter.variadic });
 	}
 	return result;
 }
@@ -476,6 +508,8 @@ inline void write_function(std::ostream& output, function const& value)
 		write_string(output, parameter.description);
 		output << ",\"type\":";
 		write_type(output, parameter.value_type);
+		// Written only when set, so the metadata of every existing fixed parameter is unchanged.
+		if (parameter.variadic) output << ",\"variadic\":true";
 		output << '}';
 	}
 	output << "],\"returns\":{\"description\":";
@@ -597,6 +631,12 @@ inline void write_json(std::ostream& output, registry const& value)
 	{
 		if (index) output << ',';
 		detail::write_variable(output, value.variables()[index]);
+	}
+	output << "],\"functions\":[";
+	for (std::size_t index = 0; index < value.functions().size(); ++index)
+	{
+		if (index) output << ',';
+		detail::write_function(output, value.functions()[index]);
 	}
 	output << "]}";
 }

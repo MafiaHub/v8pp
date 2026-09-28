@@ -80,6 +80,17 @@ camera.publish(global);
 
 Ordinary typed functions can still infer their C++ signature. `metadata::docs` provides the authoritative JavaScript signature for raw V8 callbacks and for APIs whose JavaScript types differ from their native representation. `export_catalog_from_environment` can write the completed catalog when binding registration finishes.
 
+A callback taking any number of trailing arguments declares them with `metadata::rest_param("values", "unknown[]")`, typed as the array they arrive in. A function installed straight onto the global object, with no module or class to hang it on, is recorded with `registry::function_`:
+
+```cpp
+api.function_(v8pp::metadata::function_of<v8::FunctionCallback>("setTimeout",
+    v8pp::metadata::docs("number", {
+        v8pp::metadata::param("handler", "(...args: any[]) => void"),
+        v8pp::metadata::param("milliseconds", "number", true),
+        v8pp::metadata::rest_param("args", "unknown[]"),
+    }, "Calls handler once after a delay")));
+```
+
 Class properties, raw V8 accessors, static callbacks, constants, and static values can use the same in-place declarations:
 
 ```cpp
