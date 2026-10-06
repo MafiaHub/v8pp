@@ -691,9 +691,47 @@ void test_foreign_internal_fields()
 
 	check("foreign object is not unwrapped", !v8pp::class_<Plain, Traits>::unwrap_object(isolate, foreign));
 
-	// A real instance still unwraps.
-	v8::Local<v8::Value> instance = run_script<v8::Local<v8::Value>>(context, "new Plain()");
+	// Fields holding V8 values rather than aligned pointers must not even be read as pointers.
+	v8::Local<v8::Object> valued = foreign_template->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
+	valued->SetInternalField(0, v8::Number::New(isolate, 1.5));
+	valued->SetInternalField(1, v8::String::NewFromUtf8Literal(isolate, "not a registry"));
+	check("object with value fields is not unwrapped", !v8pp::class_<Plain, Traits>::unwrap_object(isolate, valued));
+
+	// A real instance still unwraps. (context.run_script escapes into this scope; the run_script helper's
+	// own scope would leave the handle dangling.)
+	v8::Local<v8::Value> instance = context.run_script("new Plain()");
 	check("own object is unwrapped", !!v8pp::class_<Plain, Traits>::unwrap_object(isolate, instance));
+}
+
+void test_mixed_traits()
+{
+	struct Raw
+	{
+		int value = 1;
+	};
+	struct Shared
+	{
+		int value = 2;
+	};
+
+	v8pp::context context;
+	v8::Isolate* isolate = context.isolate();
+	v8::HandleScope scope(isolate);
+
+	v8pp::class_<Raw, v8pp::raw_ptr_traits> Raw_class(isolate);
+	Raw_class.ctor<>();
+	context.class_("Raw", Raw_class);
+	v8pp::class_<Shared, v8pp::shared_ptr_traits> Shared_class(isolate);
+	Shared_class.ctor<>();
+	context.class_("Shared", Shared_class);
+
+	// Each instance's registry is real, but of the other traits: it must not be cast to this one's.
+	v8::Local<v8::Value> raw = context.run_script("new Raw()");
+	v8::Local<v8::Value> shared = context.run_script("new Shared()");
+	check("raw instance through shared traits", !v8pp::class_<Shared, v8pp::shared_ptr_traits>::unwrap_object(isolate, raw));
+	check("shared instance through raw traits", !v8pp::class_<Raw, v8pp::raw_ptr_traits>::unwrap_object(isolate, shared));
+	check("raw instance through raw traits", !!v8pp::class_<Raw, v8pp::raw_ptr_traits>::unwrap_object(isolate, raw));
+	check("shared instance through shared traits", !!v8pp::class_<Shared, v8pp::shared_ptr_traits>::unwrap_object(isolate, shared));
 }
 
 void test_class()
@@ -712,4 +750,6 @@ void test_class()
 
 	test_foreign_internal_fields<v8pp::raw_ptr_traits>();
 	test_foreign_internal_fields<v8pp::shared_ptr_traits>();
+
+	test_mixed_traits();
 }

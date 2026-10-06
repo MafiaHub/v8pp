@@ -221,7 +221,7 @@ V8PP_IMPL v8::Local<v8::Object> object_registry<Traits>::wrap_object(pointer_typ
 		&& func->NewInstance(context).ToLocal(&obj))
 	{
 		obj->SetAlignedPointerInInternalField(0, Traits::pointer_id(object));
-		// Stored as the base, so unwrap_object can check it against the isolate's registries before using it.
+		// Stored as the base, so unwrap_object can check its traits before casting it back.
 		obj->SetAlignedPointerInInternalField(1, static_cast<class_info*>(this));
 
 		v8::Global<v8::Object> pobj(isolate_, obj);
@@ -262,15 +262,19 @@ object_registry<Traits>::unwrap_object(v8::Local<v8::Value> value)
 	while (value->IsObject())
 	{
 		v8::Local<v8::Object> obj = value.As<v8::Object>();
-		if (obj->InternalFieldCount() == 2)
+		// Identify a wrapper before reading a field: this class's template covers
+		// it and its derived classes; the isolate's other classes cover a second
+		// base of a multiply inherited one.
+		if (obj->InternalFieldCount() == 2
+			&& (class_function_template()->HasInstance(obj) || classes::is_wrapper(isolate_, obj)))
 		{
 			object_id id = obj->GetAlignedPointerFromInternalField(0);
 			if (id)
 			{
 				auto info = static_cast<class_info*>(
 					obj->GetAlignedPointerFromInternalField(1));
-				// Only follow the pointer if it is one of this isolate's registries.
-				if (info && classes::is_registry(isolate_, info))
+				// A registry of other traits is a different object_registry specialization.
+				if (info && info->traits == type_id<Traits>())
 				{
 					auto registry = static_cast<object_registry*>(info);
 					pointer_type ptr = registry->find_object(id, type);
@@ -377,7 +381,7 @@ V8PP_IMPL void classes::remove_all(v8::Isolate* isolate)
 	instance(operation::remove, isolate);
 }
 
-V8PP_IMPL bool classes::is_registry(v8::Isolate* isolate, class_info const* info)
+V8PP_IMPL bool classes::is_wrapper(v8::Isolate* isolate, v8::Local<v8::Object> obj)
 {
 	classes* registered = instance(operation::get, isolate);
 	if (!registered)
@@ -385,9 +389,9 @@ V8PP_IMPL bool classes::is_registry(v8::Isolate* isolate, class_info const* info
 		return false;
 	}
 	return std::any_of(registered->classes_.begin(), registered->classes_.end(),
-		[info](classes_info::value_type const& candidate)
+		[obj](classes_info::value_type const& candidate)
 		{
-			return candidate.get() == info;
+			return candidate->has_instance(obj);
 		});
 }
 
