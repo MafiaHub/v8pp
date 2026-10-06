@@ -242,8 +242,17 @@ void context::destroy()
 		return;
 	}
 
-	// remove all class singletons and external data before modules unload
-	cleanup(isolate_);
+	// remove all class singletons and external data before modules unload; a
+	// borrowed isolate outlives this context and is shared with whoever else
+	// bound functions in it, so there only the class singletons go
+	if (own_isolate_)
+	{
+		cleanup(isolate_);
+	}
+	else
+	{
+		detail::classes::remove_all(isolate_);
+	}
 
 	for (auto& kv : modules_)
 	{

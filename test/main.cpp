@@ -22,6 +22,7 @@ void run_tests()
 	void test_call_from_v8();
 	void test_function();
 	void test_function_data_freed_with_isolate();
+	void test_function_data_survives_borrowed_context();
 	void test_ptr_traits();
 	void test_module();
 	void test_class();
@@ -39,6 +40,7 @@ void run_tests()
 		{"test_throw_ex", test_throw_ex},
 		{"test_function", test_function},
 		{"test_function_data_freed_with_isolate", test_function_data_freed_with_isolate},
+		{"test_function_data_survives_borrowed_context", test_function_data_survives_borrowed_context},
 		{"test_ptr_traits", test_ptr_traits},
 		{"test_call_v8", test_call_v8},
 		{"test_call_from_v8", test_call_from_v8},

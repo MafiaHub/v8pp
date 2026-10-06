@@ -72,3 +72,20 @@ void test_function_data_freed_with_isolate()
 	}
 	check_eq("released with the isolate", held.use_count(), 1);
 }
+
+void test_function_data_survives_borrowed_context()
+{
+	// A context on a borrowed isolate does not own what others bound there:
+	// destroying it must leave their functions' data alone.
+	v8pp::context owner;
+	v8::Isolate* isolate = owner.isolate();
+	v8::HandleScope scope(isolate);
+
+	auto held = std::make_shared<int>(5);
+	owner.function("held", [held]() { return *held; });
+	{
+		v8pp::context borrowed(isolate);
+	}
+	check_eq("still held after a borrowed context went", held.use_count(), 2);
+	check_eq("still callable", run_script<int>(owner, "held()"), 5);
+}
