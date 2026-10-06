@@ -30,6 +30,9 @@ struct class_info
 
 	virtual ~class_info() = default; // make virtual to delete derived object_registry
 
+	// Whether `obj` was created from this class's template, or from one that inherits it.
+	virtual bool has_instance(v8::Local<v8::Object> obj) { (void)obj; return false; }
+
 	std::string class_name() const;
 
 	// The name this class is registered under in a metadata::registry, empty for a class bound
@@ -75,6 +78,11 @@ public:
 	v8::Local<v8::FunctionTemplate> js_function_template()
 	{
 		return to_local(isolate_, js_func_);
+	}
+
+	bool has_instance(v8::Local<v8::Object> obj) override
+	{
+		return class_function_template()->HasInstance(obj);
 	}
 
 	void set_auto_wrap_objects(bool auto_wrap) { auto_wrap_objects_ = auto_wrap; }
@@ -166,6 +174,12 @@ public:
 	static object_registry<Traits>& find(v8::Isolate* isolate, type_info const& type);
 
 	static void remove_all(v8::Isolate* isolate);
+
+	// Whether `obj` was created by one of the classes bound in `isolate`. Other
+	// embedders' objects (Node's own, for one) have internal fields too, and
+	// reading a field as an aligned pointer is undefined unless it was set as
+	// one, so an object's fields are only read once this says it is a wrapper.
+	static bool is_wrapper(v8::Isolate* isolate, v8::Local<v8::Object> obj);
 
 private:
 	using classes_info = std::vector<std::unique_ptr<class_info>>;

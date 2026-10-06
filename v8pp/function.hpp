@@ -2,7 +2,10 @@
 
 #include <cstring> // for memcpy
 
+#include <mutex>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "v8pp/call_from_v8.hpp"
 #include "v8pp/ptr_traits.hpp"
@@ -55,49 +58,77 @@ public:
 		}
 	}
 
-#if V8_MAJOR_VERSION > 10 || (V8_MAJOR_VERSION == 10 && V8_MINOR_VERSION >= 5)
-	static void destroy_all(v8::Isolate*)
-	{
-		// deprecated `Isolate::VisitHandlesWithClassIds()` has been removed
-	}
-#else
+	// Free the data of every function still bound in `isolate`. A holder is
+	// normally freed by the weak callback on its External, but weak callbacks do
+	// not run when an isolate is disposed, so an embedder that disposes isolates
+	// (one per script runtime, say) calls this through v8pp::cleanup first.
 	static void destroy_all(v8::Isolate* isolate)
 	{
-		struct handle_visitor final : v8::PersistentHandleVisitor
+		std::unordered_set<value_holder_base*> remaining;
 		{
-			v8::Isolate* isolate;
-
-			explicit handle_visitor(v8::Isolate* isolate)
-				: isolate(isolate)
+			std::lock_guard<std::mutex> lock(holders_mutex());
+			auto it = holders().find(isolate);
+			if (it == holders().end())
 			{
+				return;
 			}
-
-			virtual void VisitPersistentHandle(v8::Persistent<v8::Value>* value, uint16_t value_class_id) override
-			{
-				if (value_class_id == external_data::class_id)
-				{
-					v8::HandleScope scope(isolate);
-					v8::Local<v8::External> ext = value->Get(isolate).As<v8::External>();
-					if (!ext.IsEmpty())
-					{
-						delete static_cast<value_holder_base*>(ext->Value());
-					}
-				}
-			}
-		};
-
-		handle_visitor visitor(isolate);
-		isolate->VisitHandlesWithClassIds(&visitor);
+			remaining = std::move(it->second);
+			holders().erase(it);
+		}
+		for (value_holder_base* holder : remaining)
+		{
+			holder->tracked = false;
+			delete holder;
+		}
 	}
-#endif
 
 private:
-	static constexpr uint16_t class_id = 0x7bc;
-
 	struct value_holder_base
 	{
+		v8::Isolate* isolate = nullptr;
+		bool tracked = false;
+
 		virtual ~value_holder_base() = default;
 	};
+
+	// Every live holder, by isolate. Isolates may run on different threads.
+	static std::mutex& holders_mutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	static std::unordered_map<v8::Isolate*, std::unordered_set<value_holder_base*>>& holders()
+	{
+		static std::unordered_map<v8::Isolate*, std::unordered_set<value_holder_base*>> holders;
+		return holders;
+	}
+
+	static void track(value_holder_base* holder)
+	{
+		std::lock_guard<std::mutex> lock(holders_mutex());
+		holders()[holder->isolate].insert(holder);
+		holder->tracked = true;
+	}
+
+	static void untrack(value_holder_base* holder)
+	{
+		if (!holder->tracked)
+		{
+			return;
+		}
+		std::lock_guard<std::mutex> lock(holders_mutex());
+		auto it = holders().find(holder->isolate);
+		if (it != holders().end())
+		{
+			it->second.erase(holder);
+			if (it->second.empty())
+			{
+				holders().erase(it);
+			}
+		}
+		holder->tracked = false;
+	}
 
 	template<typename T>
 	struct value_holder final : value_holder_base
@@ -110,17 +141,19 @@ private:
 		value_holder(v8::Isolate* isolate, T&& data)
 		{
 			new (&storage) T(std::forward<T>(data));
+			this->isolate = isolate;
 			pext.Reset(isolate, v8::External::New(isolate, this));
-			pext.SetWrapperClassId(external_data::class_id);
 			pext.SetWeak(this,
 				[](v8::WeakCallbackInfo<value_holder> const& info)
 				{
 					delete info.GetParameter();
 				}, v8::WeakCallbackType::kParameter);
+			track(this);
 		}
 
 		~value_holder()
 		{
+			untrack(this);
 			if (!pext.IsEmpty())
 			{
 				data().~T();

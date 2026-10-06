@@ -221,13 +221,14 @@ V8PP_IMPL v8::Local<v8::Object> object_registry<Traits>::wrap_object(pointer_typ
 		&& func->NewInstance(context).ToLocal(&obj))
 	{
 		obj->SetAlignedPointerInInternalField(0, Traits::pointer_id(object));
-		obj->SetAlignedPointerInInternalField(1, this);
+		// Stored as the base, so unwrap_object can check its traits before casting it back.
+		obj->SetAlignedPointerInInternalField(1, static_cast<class_info*>(this));
 
 		v8::Global<v8::Object> pobj(isolate_, obj);
 		pobj.SetWeak(this, [](v8::WeakCallbackInfo<object_registry> const& data)
 			{
 				object_id object = data.GetInternalField(0);
-				object_registry* this_ = static_cast<object_registry*>(data.GetInternalField(1));
+				object_registry* this_ = static_cast<object_registry*>(static_cast<class_info*>(data.GetInternalField(1)));
 				this_->remove_object(object);
 			}, v8::WeakCallbackType::kInternalFields);
 		objects_.emplace(object, wrapped_object{ std::move(pobj), size });
@@ -261,15 +262,21 @@ object_registry<Traits>::unwrap_object(v8::Local<v8::Value> value)
 	while (value->IsObject())
 	{
 		v8::Local<v8::Object> obj = value.As<v8::Object>();
-		if (obj->InternalFieldCount() == 2)
+		// Identify a wrapper before reading a field: this class's template covers
+		// it and its derived classes; the isolate's other classes cover a second
+		// base of a multiply inherited one.
+		if (obj->InternalFieldCount() == 2
+			&& (class_function_template()->HasInstance(obj) || classes::is_wrapper(isolate_, obj)))
 		{
 			object_id id = obj->GetAlignedPointerFromInternalField(0);
 			if (id)
 			{
-				auto registry = static_cast<object_registry*>(
+				auto info = static_cast<class_info*>(
 					obj->GetAlignedPointerFromInternalField(1));
-				if (registry)
+				// A registry of other traits is a different object_registry specialization.
+				if (info && info->traits == type_id<Traits>())
 				{
+					auto registry = static_cast<object_registry*>(info);
 					pointer_type ptr = registry->find_object(id, type);
 					if (ptr)
 					{
@@ -372,6 +379,20 @@ V8PP_IMPL object_registry<Traits>& classes::find(v8::Isolate* isolate, type_info
 V8PP_IMPL void classes::remove_all(v8::Isolate* isolate)
 {
 	instance(operation::remove, isolate);
+}
+
+V8PP_IMPL bool classes::is_wrapper(v8::Isolate* isolate, v8::Local<v8::Object> obj)
+{
+	classes* registered = instance(operation::get, isolate);
+	if (!registered)
+	{
+		return false;
+	}
+	return std::any_of(registered->classes_.begin(), registered->classes_.end(),
+		[obj](classes_info::value_type const& candidate)
+		{
+			return candidate->has_instance(obj);
+		});
 }
 
 V8PP_IMPL classes::classes_info::iterator classes::find(type_info const& type)

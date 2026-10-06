@@ -6,6 +6,7 @@
 
 #include "test.hpp"
 
+#include <cstring>
 #include <type_traits>
 
 struct Xbase
@@ -660,6 +661,79 @@ void test_auto_wrap_objects()
 	check_eq("return X object", run_script<int>(context, "obj = f(123); obj.x"), 123);
 }
 
+template<typename Traits>
+void test_foreign_internal_fields()
+{
+	struct Plain
+	{
+		int value = 1;
+	};
+
+	v8pp::context context;
+	v8::Isolate* isolate = context.isolate();
+	v8::HandleScope scope(isolate);
+
+	v8pp::class_<Plain, Traits> Plain_class(isolate);
+	Plain_class.template ctor<>().var("value", &Plain::value);
+	context.class_("Plain", Plain_class);
+
+	// Another embedder's object (Node's own, for one) with two internal fields,
+	// neither of them v8pp's. Field 1 points at memory that is no registry.
+	alignas(16) static unsigned char not_a_registry[256];
+	std::memset(not_a_registry, 0xAB, sizeof not_a_registry);
+	alignas(8) static int not_an_object = 0;
+
+	v8::Local<v8::ObjectTemplate> foreign_template = v8::ObjectTemplate::New(isolate);
+	foreign_template->SetInternalFieldCount(2);
+	v8::Local<v8::Object> foreign = foreign_template->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
+	foreign->SetAlignedPointerInInternalField(0, &not_an_object);
+	foreign->SetAlignedPointerInInternalField(1, not_a_registry);
+
+	check("foreign object is not unwrapped", !v8pp::class_<Plain, Traits>::unwrap_object(isolate, foreign));
+
+	// Fields holding V8 values rather than aligned pointers must not even be read as pointers.
+	v8::Local<v8::Object> valued = foreign_template->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
+	valued->SetInternalField(0, v8::Number::New(isolate, 1.5));
+	valued->SetInternalField(1, v8::String::NewFromUtf8Literal(isolate, "not a registry"));
+	check("object with value fields is not unwrapped", !v8pp::class_<Plain, Traits>::unwrap_object(isolate, valued));
+
+	// A real instance still unwraps. (context.run_script escapes into this scope; the run_script helper's
+	// own scope would leave the handle dangling.)
+	v8::Local<v8::Value> instance = context.run_script("new Plain()");
+	check("own object is unwrapped", !!v8pp::class_<Plain, Traits>::unwrap_object(isolate, instance));
+}
+
+void test_mixed_traits()
+{
+	struct Raw
+	{
+		int value = 1;
+	};
+	struct Shared
+	{
+		int value = 2;
+	};
+
+	v8pp::context context;
+	v8::Isolate* isolate = context.isolate();
+	v8::HandleScope scope(isolate);
+
+	v8pp::class_<Raw, v8pp::raw_ptr_traits> Raw_class(isolate);
+	Raw_class.ctor<>();
+	context.class_("Raw", Raw_class);
+	v8pp::class_<Shared, v8pp::shared_ptr_traits> Shared_class(isolate);
+	Shared_class.ctor<>();
+	context.class_("Shared", Shared_class);
+
+	// Each instance's registry is real, but of the other traits: it must not be cast to this one's.
+	v8::Local<v8::Value> raw = context.run_script("new Raw()");
+	v8::Local<v8::Value> shared = context.run_script("new Shared()");
+	check("raw instance through shared traits", !v8pp::class_<Shared, v8pp::shared_ptr_traits>::unwrap_object(isolate, raw));
+	check("shared instance through raw traits", !v8pp::class_<Raw, v8pp::raw_ptr_traits>::unwrap_object(isolate, shared));
+	check("raw instance through raw traits", !!v8pp::class_<Raw, v8pp::raw_ptr_traits>::unwrap_object(isolate, raw));
+	check("shared instance through shared traits", !!v8pp::class_<Shared, v8pp::shared_ptr_traits>::unwrap_object(isolate, shared));
+}
+
 void test_class()
 {
 	test_class_<v8pp::raw_ptr_traits>();
@@ -673,4 +747,9 @@ void test_class()
 
 	test_auto_wrap_objects<v8pp::raw_ptr_traits>();
 	test_auto_wrap_objects<v8pp::shared_ptr_traits>();
+
+	test_foreign_internal_fields<v8pp::raw_ptr_traits>();
+	test_foreign_internal_fields<v8pp::shared_ptr_traits>();
+
+	test_mixed_traits();
 }
