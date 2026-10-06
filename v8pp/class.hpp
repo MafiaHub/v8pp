@@ -167,6 +167,12 @@ public:
 
 	static void remove_all(v8::Isolate* isolate);
 
+	// Whether `info` is one of the class registries bound in `isolate`. A wrapped
+	// object keeps its registry in internal field 1, but other embedders' objects
+	// (Node's own, for one) also have two internal fields, so a pointer read from
+	// an object is only a registry once this says so.
+	static bool is_registry(v8::Isolate* isolate, class_info const* info);
+
 private:
 	using classes_info = std::vector<std::unique_ptr<class_info>>;
 	classes_info classes_;

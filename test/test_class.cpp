@@ -6,6 +6,7 @@
 
 #include "test.hpp"
 
+#include <cstring>
 #include <type_traits>
 
 struct Xbase
@@ -660,6 +661,41 @@ void test_auto_wrap_objects()
 	check_eq("return X object", run_script<int>(context, "obj = f(123); obj.x"), 123);
 }
 
+template<typename Traits>
+void test_foreign_internal_fields()
+{
+	struct Plain
+	{
+		int value = 1;
+	};
+
+	v8pp::context context;
+	v8::Isolate* isolate = context.isolate();
+	v8::HandleScope scope(isolate);
+
+	v8pp::class_<Plain, Traits> Plain_class(isolate);
+	Plain_class.template ctor<>().var("value", &Plain::value);
+	context.class_("Plain", Plain_class);
+
+	// Another embedder's object (Node's own, for one) with two internal fields,
+	// neither of them v8pp's. Field 1 points at memory that is no registry.
+	alignas(16) static unsigned char not_a_registry[256];
+	std::memset(not_a_registry, 0xAB, sizeof not_a_registry);
+	alignas(8) static int not_an_object = 0;
+
+	v8::Local<v8::ObjectTemplate> foreign_template = v8::ObjectTemplate::New(isolate);
+	foreign_template->SetInternalFieldCount(2);
+	v8::Local<v8::Object> foreign = foreign_template->NewInstance(isolate->GetCurrentContext()).ToLocalChecked();
+	foreign->SetAlignedPointerInInternalField(0, &not_an_object);
+	foreign->SetAlignedPointerInInternalField(1, not_a_registry);
+
+	check("foreign object is not unwrapped", !v8pp::class_<Plain, Traits>::unwrap_object(isolate, foreign));
+
+	// A real instance still unwraps.
+	v8::Local<v8::Value> instance = run_script<v8::Local<v8::Value>>(context, "new Plain()");
+	check("own object is unwrapped", !!v8pp::class_<Plain, Traits>::unwrap_object(isolate, instance));
+}
+
 void test_class()
 {
 	test_class_<v8pp::raw_ptr_traits>();
@@ -673,4 +709,7 @@ void test_class()
 
 	test_auto_wrap_objects<v8pp::raw_ptr_traits>();
 	test_auto_wrap_objects<v8pp::shared_ptr_traits>();
+
+	test_foreign_internal_fields<v8pp::raw_ptr_traits>();
+	test_foreign_internal_fields<v8pp::shared_ptr_traits>();
 }
