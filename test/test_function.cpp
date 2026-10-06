@@ -3,6 +3,8 @@
 
 #include "test.hpp"
 
+#include <memory>
+
 static int f(int const& x) { return x; }
 static std::string g(char const* s) { return s ? s : ""; }
 static int h(v8::Isolate*, int x, int y) { return x + y; }
@@ -54,4 +56,19 @@ void test_function()
 	std::function<int(int)> fun = f;
 	context.function("fun", fun);
 	check_eq("fun", run_script<int>(context, "fun(42)"), 42);
+}
+
+void test_function_data_freed_with_isolate()
+{
+	// Weak callbacks do not run when an isolate is disposed, so what a bound
+	// function captured is freed by cleanup(), which the context calls first.
+	auto held = std::make_shared<int>(7);
+	{
+		v8pp::context context;
+		v8::HandleScope scope(context.isolate());
+		context.function("held", [held]() { return *held; });
+		check_eq("held", run_script<int>(context, "held()"), 7);
+		check_eq("captured while bound", held.use_count(), 2);
+	}
+	check_eq("released with the isolate", held.use_count(), 1);
 }
